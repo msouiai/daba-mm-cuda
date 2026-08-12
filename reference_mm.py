@@ -109,18 +109,28 @@ def mm_step(R, t, X, ci, pi, uv, f, k1, k2, NC, NP, factor=2.0, lam=1e-6):
     Hp = np.zeros((NP, 3, 3)); gp = np.zeros((NP, 3))
     np.add.at(Hc, ci, np.einsum('oai,oaj->oij', Jc, Jc)); np.add.at(gc, ci, np.einsum('oai,oa->oi', Jc, res))
     np.add.at(Hp, pi, np.einsum('oai,oaj->oij', Jp, Jp)); np.add.at(gp, pi, np.einsum('oai,oa->oi', Jp, res))
+    # gc, gp returned too: they are grad f evaluated at the *input* (R, t, X), needed
+    # verbatim by the gradient-restart scheme below (O'Donoghue & Candes 2012,
+    # arXiv:1204.3982) -- no extra computation, just not discarding what's already here.
     Hc = factor * Hc; Hc[:, range(6), range(6)] += lam
     Hp = factor * Hp; Hp[:, range(3), range(3)] += lam
     dC = -np.einsum('cij,cj->ci', np.linalg.inv(Hc), gc)
     dX = -np.einsum('pij,pj->pi', np.linalg.inv(Hp), gp)
-    return np.einsum('cij,cjk->cik', rotvec_to_R(dC[:, :3]), R), t + dC[:, 3:6], X + dX
+    return np.einsum('cij,cjk->cik', rotvec_to_R(dC[:, :3]), R), t + dC[:, 3:6], X + dX, gc, gp
 
 # ------------------------------------------------------------------ accelerated outer loop
-def solve(prob, n_iter, accelerated=True, log_every=10, verbose=True, eta=1.0):
-    # Restart rule: EMA reference cost + halved momentum on restart (arXiv:2108.00083
-    # Eq. 59 / Remark 10), not a hard "restart on any cost increase, reset q to 1" rule --
-    # see CONVERGENCE_LITERATURE.md. Mirrored exactly in daba_mm.cu so the two stay
-    # cross-checkable the same way the rest of this file already is.
+def solve(prob, n_iter, accelerated=True, log_every=10, verbose=True, eta=1.0,
+          restart_scheme="function"):
+    # restart_scheme="function": EMA reference cost + halved momentum on restart
+    #   (arXiv:2108.00083 Eq. 59 / Remark 10) -- see CONVERGENCE_LITERATURE.md.
+    # restart_scheme="gradient": restart whenever grad_f(y)^T (x_new - x_curr) > 0
+    #   (O'Donoghue & Candes, arXiv:1204.3982, Sec 3.2) -- the momentum-vs-negative-
+    #   gradient obtuse-angle test. grad_f(y) is (gc, gp) from mm_step, already
+    #   computed at y as a byproduct of the block solve; (x_new - x_curr) is taken
+    #   in the tangent space at R_curr for rotations (R_log(R_new @ R_curr^T)),
+    #   Euclidean for translations/points. Both schemes mirrored exactly in
+    #   daba_mm.cu so the two stay cross-checkable the same way the rest of this
+    #   file already is.
     NC, NP = prob["ncam"], prob["npt"]
     ci, pi, uv = prob["cam_idx"], prob["pt_idx"], prob["uv"]
     f, k1, k2 = prob["cams"][:, 6].copy(), prob["cams"][:, 7].copy(), prob["cams"][:, 8].copy()
@@ -140,12 +150,23 @@ def solve(prob, n_iter, accelerated=True, log_every=10, verbose=True, eta=1.0):
         else:
             R_y, t_y, X_y = R_curr, t_curr, X_curr
 
-        R_new, t_new, X_new = mm_step(R_y, t_y, X_y, ci, pi, uv, f, k1, k2, NC, NP)
+        R_new, t_new, X_new, gc, gp = mm_step(R_y, t_y, X_y, ci, pi, uv, f, k1, k2, NC, NP)
         cost_new = total_cost(R_new, t_new, X_new, ci, pi, uv, f, k1, k2)
 
+        trigger = False
+        if accelerated:
+            if restart_scheme == "gradient":
+                domega = R_log(np.einsum('cij,ckj->cik', R_new, R_curr))  # log(R_new @ R_curr^T)
+                dt = t_new - t_curr
+                dX = X_new - X_curr
+                dot = (np.sum(gc[:, :3] * domega) + np.sum(gc[:, 3:6] * dt) + np.sum(gp * dX))
+                trigger = dot > 0
+            else:
+                trigger = cost_new > cost_ema
+
         restarted = False
-        if accelerated and cost_new > cost_ema:
-            R_new, t_new, X_new = mm_step(R_curr, t_curr, X_curr, ci, pi, uv, f, k1, k2, NC, NP)
+        if trigger:
+            R_new, t_new, X_new, _, _ = mm_step(R_curr, t_curr, X_curr, ci, pi, uv, f, k1, k2, NC, NP)
             cost_new = total_cost(R_new, t_new, X_new, ci, pi, uv, f, k1, k2)
             q = max(q / 2, 1.0)
             restarted = True

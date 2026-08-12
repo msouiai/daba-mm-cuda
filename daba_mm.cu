@@ -390,6 +390,51 @@ __global__ void KernelExtrapolatePoints(const Scalar* __restrict__ X_curr,
   X_y[i] = X_curr[i] + beta * (X_curr[i] - X_prev[i]);
 }
 
+// ============================================================== Kernel E: gradient-restart dot product
+// grad_f(y)^T (x_new - x_curr), per O'Donoghue & Candes (arXiv:1204.3982 Sec 3.2)
+// "gradient scheme": restart whenever this is > 0. gc/gp are grad_f(y) -- already
+// computed by KernelJacobianAccumulate inside MmStep, not recomputed here. The
+// step (x_new - x_curr) is taken in the tangent space at R_curr for rotations
+// (Log(R_new @ R_curr^T)), Euclidean for translations/points.
+__global__ void KernelGradientRestartDotCameras(const Scalar* __restrict__ R_new,
+                                                 const Scalar* __restrict__ R_curr,
+                                                 const Scalar* __restrict__ t_new,
+                                                 const Scalar* __restrict__ t_curr,
+                                                 const Scalar* __restrict__ gc, int ncam,
+                                                 Scalar* __restrict__ dot_out) {
+  int c = blockIdx.x * blockDim.x + threadIdx.x;
+  if (c >= ncam) return;
+  Scalar RcurrT[9];
+  const Scalar* Rc = R_curr + 9 * c;
+  RcurrT[0] = Rc[0]; RcurrT[1] = Rc[3]; RcurrT[2] = Rc[6];
+  RcurrT[3] = Rc[1]; RcurrT[4] = Rc[4]; RcurrT[5] = Rc[7];
+  RcurrT[6] = Rc[2]; RcurrT[7] = Rc[5]; RcurrT[8] = Rc[8];
+  Scalar RR[9];
+  Mat3Mul(R_new + 9 * c, RcurrT, RR);  // R_new @ R_curr^T
+  Scalar omega[3];
+  LogSO3(RR, omega);
+  Scalar dt0 = t_new[3 * c] - t_curr[3 * c];
+  Scalar dt1 = t_new[3 * c + 1] - t_curr[3 * c + 1];
+  Scalar dt2 = t_new[3 * c + 2] - t_curr[3 * c + 2];
+  const Scalar* g = gc + 6 * c;
+  Scalar dot = g[0] * omega[0] + g[1] * omega[1] + g[2] * omega[2] + g[3] * dt0 + g[4] * dt1 +
+               g[5] * dt2;
+  atomicAdd(dot_out, dot);
+}
+
+__global__ void KernelGradientRestartDotPoints(const Scalar* __restrict__ X_new,
+                                                const Scalar* __restrict__ X_curr,
+                                                const Scalar* __restrict__ gp, int npt,
+                                                Scalar* __restrict__ dot_out) {
+  int p = blockIdx.x * blockDim.x + threadIdx.x;
+  if (p >= npt) return;
+  Scalar dx0 = X_new[3 * p] - X_curr[3 * p];
+  Scalar dx1 = X_new[3 * p + 1] - X_curr[3 * p + 1];
+  Scalar dx2 = X_new[3 * p + 2] - X_curr[3 * p + 2];
+  const Scalar* g = gp + 3 * p;
+  atomicAdd(dot_out, g[0] * dx0 + g[1] * dx1 + g[2] * dx2);
+}
+
 // ============================================================== host orchestration
 struct DeviceProblem {
   int ncam, npt, nobs;
@@ -452,17 +497,44 @@ Scalar MmStep(const DeviceProblem& p, const DeviceState& y, const DeviceState& o
   return ComputeCost(p, out, d_cost);
 }
 
+// grad_f(y)^T (new - curr), gradient-restart trigger test (see Kernel E above). gc/gp
+// must still hold grad_f(y) from the MmStep call that produced `new_state`.
+Scalar GradientRestartDot(const DeviceState& new_state, const DeviceState& curr, Scalar* gc,
+                           Scalar* gp, int ncam, int npt, Scalar* d_dot) {
+  Scalar zero = 0;
+  CUDA_CHECK(cudaMemcpy(d_dot, &zero, sizeof(Scalar), cudaMemcpyHostToDevice));
+  const int block = 256;
+  KernelGradientRestartDotCameras<<<GridSize(ncam, block), block>>>(
+      new_state.R, curr.R, new_state.t, curr.t, gc, ncam, d_dot);
+  KernelGradientRestartDotPoints<<<GridSize(npt, block), block>>>(new_state.X, curr.X, gp, npt,
+                                                                   d_dot);
+  CUDA_CHECK(cudaGetLastError());
+  Scalar dot;
+  CUDA_CHECK(cudaMemcpy(&dot, d_dot, sizeof(Scalar), cudaMemcpyDeviceToHost));
+  return dot;
+}
+
 namespace {
 void PrintUsage(const char* prog) {
   std::fprintf(stderr,
                "Usage: %s --dataset <bal.txt> [--iters N] [--accelerated 0|1]\n"
-               "  [--factor F] [--lam L] [--eta E] [--loss l2|huber] [--fp64 0|1]\n"
+               "  [--factor F] [--lam L] [--eta E] [--restart-scheme function|gradient]\n"
+               "  [--loss l2|huber] [--fp64 0|1]\n"
                "\n"
                "  --dataset      path to a BAL problem file (required)\n"
                "  --iters        outer MM iterations (default 200)\n"
                "  --accelerated  1 = Nesterov + restart (default), 0 = plain MM\n"
                "  --factor       majorization factor (default 2.0, per the spec)\n"
                "  --lam          block-solve Levenberg damping (default 1e-6)\n"
+               "  --restart-scheme  function (default) or gradient. function: restart\n"
+               "                 when cost_new > EMA(cost) (see --eta). gradient:\n"
+               "                 restart when grad_f(y)^T(x_new-x_curr) > 0 (O'Donoghue\n"
+               "                 & Candes, arXiv:1204.3982 Sec 3.2 -- momentum vs.\n"
+               "                 negative gradient obtuse angle; no extra cost eval,\n"
+               "                 reuses grad_f(y) already computed by the block solve).\n"
+               "                 Measured near-identical to function scheme on this\n"
+               "                 repo's real BA problem at 200 it (6.8544e4 vs\n"
+               "                 6.8545e4) -- see CONVERGENCE_LITERATURE.md.\n"
                "  --eta          EMA weight for the restart reference cost (default\n"
                "                 1.0 = EMA reduces to the last cost, i.e. restart\n"
                "                 trigger matches the original hard-restart rule;\n"
@@ -496,6 +568,7 @@ int main(int argc, char** argv) {
   Scalar factor = 2.0;
   Scalar lam = 1e-6;
   Scalar eta = 1.0;
+  std::string restart_scheme = "function";
   std::string loss = "l2";
   bool fp64 = true;
 
@@ -514,12 +587,18 @@ int main(int argc, char** argv) {
     else if (a == "--factor") factor = std::atof(next().c_str());
     else if (a == "--lam") lam = std::atof(next().c_str());
     else if (a == "--eta") eta = std::atof(next().c_str());
+    else if (a == "--restart-scheme") restart_scheme = next();
     else if (a == "--loss") loss = next();
     else if (a == "--fp64") fp64 = std::atoi(next().c_str()) != 0;
     else if (a == "-h" || a == "--help") { PrintUsage(argv[0]); return EXIT_SUCCESS; }
     else { std::fprintf(stderr, "unknown argument: %s\n", a.c_str()); PrintUsage(argv[0]); return EXIT_FAILURE; }
   }
   if (path.empty()) { PrintUsage(argv[0]); return EXIT_FAILURE; }
+  if (restart_scheme != "function" && restart_scheme != "gradient") {
+    std::fprintf(stderr, "--restart-scheme must be 'function' or 'gradient', got '%s'\n",
+                 restart_scheme.c_str());
+    return EXIT_FAILURE;
+  }
   if (loss != "l2") {
     std::fprintf(stderr,
                  "warning: --loss %s not implemented (optional extension, spec "
@@ -580,12 +659,13 @@ int main(int argc, char** argv) {
   CUDA_CHECK(cudaMemcpy(curr.X, bal.pts.data(), 3 * bal.npt * sizeof(Scalar), cudaMemcpyHostToDevice));
   CopyState(prev, curr, bal.ncam, bal.npt);
 
-  Scalar *Hc, *gc, *Hp, *gp, *d_cost;
+  Scalar *Hc, *gc, *Hp, *gp, *d_cost, *d_dot;
   CUDA_CHECK(cudaMalloc(&Hc, (size_t)36 * bal.ncam * sizeof(Scalar)));
   CUDA_CHECK(cudaMalloc(&gc, (size_t)6 * bal.ncam * sizeof(Scalar)));
   CUDA_CHECK(cudaMalloc(&Hp, (size_t)9 * bal.npt * sizeof(Scalar)));
   CUDA_CHECK(cudaMalloc(&gp, (size_t)3 * bal.npt * sizeof(Scalar)));
   CUDA_CHECK(cudaMalloc(&d_cost, sizeof(Scalar)));
+  CUDA_CHECK(cudaMalloc(&d_dot, sizeof(Scalar)));
 
   Scalar cost_curr = ComputeCost(p, curr, d_cost);
   Scalar rmse0 = std::sqrt(cost_curr * 2.0 / bal.nobs);
@@ -619,8 +699,18 @@ int main(int argc, char** argv) {
 
     Scalar cost_new = MmStep(p, y, next, Hc, gc, Hp, gp, d_cost, factor, lam);
 
+    bool trigger = false;
+    if (accelerated) {
+      if (restart_scheme == "gradient") {
+        Scalar dot = GradientRestartDot(next, curr, gc, gp, bal.ncam, bal.npt, d_dot);
+        trigger = dot > 0;
+      } else {
+        trigger = cost_new > cost_ema;
+      }
+    }
+
     bool restarted = false;
-    if (accelerated && cost_new > cost_ema) {
+    if (trigger) {
       cost_new = MmStep(p, curr, next, Hc, gc, Hp, gp, d_cost, factor, lam);
       q = std::max(q / (Scalar)2, (Scalar)1);
       restarted = true;

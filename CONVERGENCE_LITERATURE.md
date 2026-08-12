@@ -1,10 +1,14 @@
 # MM convergence literature review: what could improve `daba_mm.cu`
 
-Checked the majorization-minimization (MM) acceleration literature against what
-`daba_mm.cu` currently does, to see if there are concrete, non-speculative
-improvements available rather than just tuning existing knobs. Three papers turned
-up directly relevant findings; ranked below by strength of evidence + ease of
-implementation, not by publication date.
+Checked the majorization-minimization (MM) and first-order-methods acceleration
+literature against what `daba_mm.cu` currently does, to see if there are concrete,
+non-speculative improvements available rather than just tuning existing knobs.
+Two rounds: MM-specific literature first (three papers with direct findings,
+ranked by strength of evidence + ease of implementation below), then broader
+first-order methods generally (further down). Two candidates from the first
+round were actually implemented, cross-validated, and measured — both turned
+out not to help on this repo's real problems, contrary to their source papers'
+own findings on different problem classes; see those sections for the numbers.
 
 ## Current state of the code (for reference)
 
@@ -157,15 +161,112 @@ reconstructions this repo has access to), but low eta is deliberately *not* the
 default given what was actually measured, not what the source paper reported on
 a different problem.
 
+## Also implemented and measured: gradient-based restart (O'Donoghue & Candes)
+
+**Source**: O'Donoghue & Candes, *"Adaptive Restart for Accelerated Gradient
+Schemes"* (arXiv:1204.3982, Sec 3.2) — the original paper the distributed-PGO
+restart work above builds on. Alongside the function scheme already covered,
+they propose a mechanistically different **gradient scheme**: restart whenever
+
+```
+grad_f(y^(k-1))^T (x^(k) - x^(k-1)) > 0
+```
+
+i.e. whenever the step actually taken and the gradient at the momentum point
+point in the same (uphill) direction — momentum making things worse, measured
+directly rather than inferred from the cost. The paper's stated appeal: "all
+quantities involved... are already calculated in accelerated schemes, so no
+extra computation is required" — true here too: `grad_f(y)` is exactly `(gc, gp)`,
+already computed by every `MmStep` call as a byproduct of the block solve: no
+new Jacobian pass needed, just not discarding what's already there. The
+extra cost is one small reduction kernel (`KernelGradientRestartDot{Cameras,Points}`)
+computing the dot product — no extra `ComputeCost` call, unlike the function
+scheme's restart check.
+
+Implemented as `--restart-scheme function|gradient` in both `daba_mm.cu` and
+`reference_mm.py`, using the same tangent-space convention as the existing
+Nesterov extrapolation (`Log(R_new · R_curr^T)` for rotations, Euclidean for
+translation/points). Cross-validated CUDA vs. numpy exactly on both
+`ladybug-49.txt` and this repo's muellcontainer BAL.
+
+**Result, three problems, 200 iterations, function-scheme baseline vs. gradient-scheme:**
+
+| problem | function scheme | gradient scheme | delta |
+|---|---:|---:|---:|
+| ladybug-49 (49 cam / 7.8K pt / 32K obs) | 1.636729e4 | 1.636729e4 | ~0 (negligible) |
+| muellcontainer BAL (62 cam / 18K pt / 74K obs) | 6.854524e4 | 6.854399e4 | ~0.02% better (negligible) |
+| venice-1778 (1,778 cam / 994K pt / 5.0M obs) | 1.553651e7 | 1.562371e7 | **~0.56% worse** |
+
+**Neither literature-backed restart refinement (this one, or the EMA-tolerant
+one above) beats the plain original "restart on any cost increase, reset q to
+1" rule on this repo's real problems** — on the two smaller problems both
+refinements are noise-level indistinguishable from the baseline, and on the
+largest/hardest one both are measurably worse (EMA: not retested at this scale;
+gradient: 0.56% worse, directly measured). This is a genuine, mildly surprising
+finding: two independent, well-established pieces of restart literature both
+fail to transfer a benefit to this specific problem's conditioning, in the
+same direction (no improvement, mild regression at scale). Kept as
+`--restart-scheme gradient`, opt-in, not the default, for the same reason
+`--eta` isn't defaulted low: measured, not assumed.
+
+## Broader first-order-methods literature check
+
+Given both restart refinements above turned out not to transfer, checked
+further afield in first-order methods generally (not just restart schemes) for
+other candidates. Three more turned up; none implemented — reasoning below on
+why each was or wasn't worth pursuing given what's already been measured.
+
+**Barzilai-Borwein (BB) / spectral step size — the strongest remaining lead.**
+BB step sizes replace this code's fixed `factor=2.0` majorization multiplier
+with a curvature estimate from consecutive iterates and gradients (the secant
+equation, `alpha = (s^T s)/(s^T y)` or `(s^T y)/(y^T y)`, `s` = position
+delta, `y` = gradient delta) — cheap, well-established for exactly this kind
+of "no natural step size" gradient/MM setting. Genuinely different from both
+restart schemes tried above: those change *when* to reset momentum, this
+changes the majorization strength *itself*, every iteration, not just at
+restarts. Not implemented here — would need tracking the previous iteration's
+gradient (not currently kept around past the block solve that consumes it)
+and picking a per-block vs. global BB estimate, which is a real design
+decision, not a one-line change. The most promising untried direction given
+what's been ruled out so far; a natural next step if this is picked back up.
+
+**Catalyst (Lin, Mairal, Harchaoui — arXiv:1506.02186, arXiv:1712.05654).**
+A generic acceleration wrapper: solve a sequence of proximal-point
+subproblems (built from the *original* objective plus a quadratic anchor to
+the previous iterate) to increasing accuracy, with a specific warm-start and
+stopping-tolerance schedule, provably recovering the optimal first-order rate
+around *any* base method — including block coordinate descent, which is
+structurally close to what this MM step already is. Theoretically the most
+powerful option found, but it's an outer-loop restructuring (an extra nested
+convergence criterion + envelope parameter to tune), not a local change like
+the other three items here — given the two restart refinements already tried
+underperformed a much simpler baseline on these real problems, adopting a
+substantially more complex scheme without being able to test it first would
+repeat the same mistake this whole investigation was set up to avoid. Flagging
+as real and citable, not pursuing without a way to validate it cheaply first.
+
+**Accelerated parallel/randomized block coordinate descent** (Nesterov 2012;
+Fercoq & Richtárik, "Accelerated, Parallel, and Proximal Coordinate Descent,"
+SIAM J. Optim. 2015). Checked and **not applicable to this code's setting**:
+this literature's speedup comes from touching only a random subset of
+coordinate blocks per iteration (importance-sampled by per-block Lipschitz
+constant), which matters when per-block updates are the bottleneck on a
+sequential/CPU setup. `daba_mm.cu` already updates every camera and point
+block every iteration, fully in parallel on the GPU — the bottleneck here is
+`KernelJacobianAccumulate`'s O(nobs) pass, not per-block sequential cost, so
+there's no idle compute for importance sampling to reclaim. Read the core
+papers, correctly does not transfer to a full-batch GPU MM setting — recorded
+here so it isn't re-investigated later under the assumption it wasn't checked.
+
 ## Next steps not yet tried
 
-- Item 2 (closed-form warm start) and item 3 (SQUAREM) remain unimplemented —
-  neither depends on item 1's outcome. Item 3 in particular is now a more
-  interesting next try than pushing further on adaptive restart alone, since
-  it's mechanistically orthogonal (attacks the majorization step itself via
-  extrapolation, not the momentum schedule around it).
-- Whether low `eta` helps at a much larger iteration budget (where its extra
-  tolerance has more iterations to pay itself back) wasn't tested — only 200
-  iterations, matching every other number already reported in this repo for
-  comparability. A 1000+ iteration sweep would be needed to rule this out
-  definitively rather than just at the budget used everywhere else here.
+- **Barzilai-Borwein majorization factor** (above) — the strongest untried
+  lead from this round; changes the per-iteration step strength rather than
+  the restart logic, genuinely orthogonal to everything tried so far.
+- Item 2 (closed-form warm start) and item 3 (SQUAREM), from the first round,
+  remain unimplemented — neither depends on any restart-scheme outcome.
+- Whether low `eta` or the gradient scheme help at a much larger iteration
+  budget (1000+, vs. the 200 used everywhere in this repo for comparability)
+  wasn't tested. Given the venice-1778 result at 200 iterations went the wrong
+  direction for the gradient scheme specifically, this is a lower-priority
+  follow-up than BB, not a first thing to retry.

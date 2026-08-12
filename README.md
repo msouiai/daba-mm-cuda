@@ -124,18 +124,29 @@ the full target scale from Section 1 comfortably inside GPU memory (16GB total, 
 problem uses well under 1GB) and at a practical iteration rate, not a numpy comparison
 at that size.
 
-## Convergence: adaptive restart (`--eta`)
+## Convergence: adaptive restart (`--eta`, `--restart-scheme`)
 
-Investigated whether a literature-backed refinement to the Nesterov restart rule
-(EMA-tolerant restart threshold + halved, not reset, momentum on restart —
-Fan et al., arXiv:2108.00083) would speed up convergence beyond the original
-hard-restart rule. Implemented and cross-validated in both `daba_mm.cu` and
-`reference_mm.py` (`--eta`, default 1.0 = original behavior). **Measured result:
-the source paper's recommended low-eta regime makes convergence ~0.6% worse on
-this repo's real BA problem, not better** — their finding doesn't transfer from
-distributed pose-graph optimization to this problem class. Full writeup,
-including the isolation experiment that pinpointed which half of the change was
-responsible, in `CONVERGENCE_LITERATURE.md`.
+Investigated two literature-backed refinements to the Nesterov restart rule:
+(1) an EMA-tolerant restart threshold + halved, not reset, momentum on restart
+(Fan et al., arXiv:2108.00083); (2) a gradient-based restart trigger,
+`grad_f(y)^T(x_new-x_curr) > 0`, in place of the cost-based trigger (O'Donoghue
+& Candes, arXiv:1204.3982). Both implemented and cross-validated exactly
+against `reference_mm.py` (CUDA vs. numpy, 6 sig figs) via `--eta` and
+`--restart-scheme function|gradient`.
+
+**Measured result: neither beats the original simple restart rule on this
+repo's real BA problems.** The EMA scheme's paper-recommended low-eta setting
+makes convergence ~0.6% worse (not better) on the muellcontainer problem; the
+gradient scheme is statistically indistinguishable from baseline on two
+smaller problems and ~0.56% *worse* on venice-1778, the largest real dataset
+in this repo. Both source papers' own findings — from distributed pose-graph
+optimization and generic convex optimization respectively — don't transfer to
+this problem's conditioning. Defaults kept at the original behavior
+(`eta=1.0`, `--restart-scheme function`); both alternatives are available and
+honestly characterized, not adopted, in `CONVERGENCE_LITERATURE.md` (which
+also covers Barzilai-Borwein step sizes, Catalyst, and accelerated coordinate
+descent — one untried lead, one flagged as too large a change to validate
+cheaply, one confirmed not applicable to this GPU full-batch setting).
 
 ## Honest gaps / not implemented
 
