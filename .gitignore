@@ -1,0 +1,10 @@
+# build artifacts
+build_cmake/
+daba_mm
+__pycache__/
+*.pyc
+
+# BAL datasets -- large, publicly downloadable, not source (validate.sh fetches
+# ladybug-49.txt automatically; venice-1778.txt is ~280MB, fetch separately if needed)
+/ladybug-49.txt
+/venice-1778.txt
