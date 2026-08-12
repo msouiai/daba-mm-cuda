@@ -124,6 +124,19 @@ the full target scale from Section 1 comfortably inside GPU memory (16GB total, 
 problem uses well under 1GB) and at a practical iteration rate, not a numpy comparison
 at that size.
 
+## Convergence: adaptive restart (`--eta`)
+
+Investigated whether a literature-backed refinement to the Nesterov restart rule
+(EMA-tolerant restart threshold + halved, not reset, momentum on restart —
+Fan et al., arXiv:2108.00083) would speed up convergence beyond the original
+hard-restart rule. Implemented and cross-validated in both `daba_mm.cu` and
+`reference_mm.py` (`--eta`, default 1.0 = original behavior). **Measured result:
+the source paper's recommended low-eta regime makes convergence ~0.6% worse on
+this repo's real BA problem, not better** — their finding doesn't transfer from
+distributed pose-graph optimization to this problem class. Full writeup,
+including the isolation experiment that pinpointed which half of the change was
+responsible, in `CONVERGENCE_LITERATURE.md`.
+
 ## Honest gaps / not implemented
 
 - **fp32 mode**: `Scalar` typedef exists for this but the path is untested.

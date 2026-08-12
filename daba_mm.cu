@@ -456,13 +456,27 @@ namespace {
 void PrintUsage(const char* prog) {
   std::fprintf(stderr,
                "Usage: %s --dataset <bal.txt> [--iters N] [--accelerated 0|1]\n"
-               "  [--factor F] [--lam L] [--loss l2|huber] [--fp64 0|1]\n"
+               "  [--factor F] [--lam L] [--eta E] [--loss l2|huber] [--fp64 0|1]\n"
                "\n"
                "  --dataset      path to a BAL problem file (required)\n"
                "  --iters        outer MM iterations (default 200)\n"
                "  --accelerated  1 = Nesterov + restart (default), 0 = plain MM\n"
                "  --factor       majorization factor (default 2.0, per the spec)\n"
                "  --lam          block-solve Levenberg damping (default 1e-6)\n"
+               "  --eta          EMA weight for the restart reference cost (default\n"
+               "                 1.0 = EMA reduces to the last cost, i.e. restart\n"
+               "                 trigger matches the original hard-restart rule;\n"
+               "                 only the momentum counter q is still halved, not\n"
+               "                 reset, on restart). Fan et al. (arXiv:2108.00083\n"
+               "                 Remark 10) recommend eta << 1 on distributed pose-\n"
+               "                 graph MM and report it reduces unneeded restarts;\n"
+               "                 measured directly on this repo's real BA problem,\n"
+               "                 eta <= ~0.2 instead makes the 200-it final cost\n"
+               "                 ~0.6%% WORSE (6.8955e4 vs 6.8531e4 baseline), eta\n"
+               "                 >= ~0.25 is a statistical wash. Their finding does\n"
+               "                 not transfer to this problem class -- kept as a\n"
+               "                 tunable for further experimentation, not the\n"
+               "                 default. See CONVERGENCE_LITERATURE.md.\n"
                "  --loss         l2 (default) or huber; huber is not implemented\n"
                "                 (optional extension, Section 7) -- passing it\n"
                "                 prints a warning and falls back to l2 rather\n"
@@ -481,6 +495,7 @@ int main(int argc, char** argv) {
   bool accelerated = true;
   Scalar factor = 2.0;
   Scalar lam = 1e-6;
+  Scalar eta = 1.0;
   std::string loss = "l2";
   bool fp64 = true;
 
@@ -498,6 +513,7 @@ int main(int argc, char** argv) {
     else if (a == "--accelerated") accelerated = std::atoi(next().c_str()) != 0;
     else if (a == "--factor") factor = std::atof(next().c_str());
     else if (a == "--lam") lam = std::atof(next().c_str());
+    else if (a == "--eta") eta = std::atof(next().c_str());
     else if (a == "--loss") loss = next();
     else if (a == "--fp64") fp64 = std::atoi(next().c_str()) != 0;
     else if (a == "-h" || a == "--help") { PrintUsage(argv[0]); return EXIT_SUCCESS; }
@@ -576,11 +592,22 @@ int main(int argc, char** argv) {
   std::printf("init cost=%.6e rmse=%.4fpx\n", cost_curr, rmse0);
 
   const int block = 256;
-  int q = 1;
+  Scalar q = 1;
+  // EMA restart reference (arXiv:2108.00083 Eq. 59): F_ema(0) = F(X(0)), then
+  // updated after every accepted iterate. Restarting against this running average
+  // instead of the single previous cost tolerates small non-monotone fluctuations
+  // that would otherwise trigger a restart, which the source paper's own authors
+  // found reduced unnecessary restarts and sped up convergence relative to the
+  // plain "restart on any increase" rule this file used before (see
+  // CONVERGENCE_LITERATURE.md). The sufficient-decrease tolerance term (psi term
+  // in the paper's Algorithm 4) is deliberately not ported here -- no calibrated
+  // value for it was available from the accessible parts of that paper, and an
+  // uncalibrated constant would be worse than omitting it.
+  Scalar cost_ema = cost_curr;
   auto t_start = std::chrono::steady_clock::now();
   for (int it = 1; it <= n_iter; ++it) {
     if (accelerated) {
-      Scalar beta = (Scalar)(q - 1) / (Scalar)(q + 2);
+      Scalar beta = (q - 1) / (q + 2);
       KernelExtrapolateCameras<<<GridSize(bal.ncam, block), block>>>(
           curr.R, prev.R, curr.t, prev.t, bal.ncam, beta, y.R, y.t);
       KernelExtrapolatePoints<<<GridSize(3 * bal.npt, block), block>>>(curr.X, prev.X,
@@ -593,9 +620,9 @@ int main(int argc, char** argv) {
     Scalar cost_new = MmStep(p, y, next, Hc, gc, Hp, gp, d_cost, factor, lam);
 
     bool restarted = false;
-    if (accelerated && cost_new > cost_curr) {
+    if (accelerated && cost_new > cost_ema) {
       cost_new = MmStep(p, curr, next, Hc, gc, Hp, gp, d_cost, factor, lam);
-      q = 1;
+      q = std::max(q / (Scalar)2, (Scalar)1);
       restarted = true;
     } else {
       q += 1;
@@ -607,9 +634,11 @@ int main(int argc, char** argv) {
     CopyState(prev, curr, bal.ncam, bal.npt);
     CopyState(curr, next, bal.ncam, bal.npt);
     cost_curr = cost_new;
+    cost_ema = (1 - eta) * cost_ema + eta * cost_curr;
 
     if (it % 10 == 0 || it == n_iter) {
-      std::printf("  it%4d cost=%.5e q=%d restart=%d\n", it, cost_curr, q, restarted);
+      std::printf("  it%4d cost=%.5e ema=%.5e q=%.3f restart=%d\n", it, cost_curr, cost_ema, q,
+                  restarted);
     }
   }
   cudaDeviceSynchronize();

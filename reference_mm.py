@@ -116,15 +116,20 @@ def mm_step(R, t, X, ci, pi, uv, f, k1, k2, NC, NP, factor=2.0, lam=1e-6):
     return np.einsum('cij,cjk->cik', rotvec_to_R(dC[:, :3]), R), t + dC[:, 3:6], X + dX
 
 # ------------------------------------------------------------------ accelerated outer loop
-def solve(prob, n_iter, accelerated=True, log_every=10, verbose=True):
+def solve(prob, n_iter, accelerated=True, log_every=10, verbose=True, eta=1.0):
+    # Restart rule: EMA reference cost + halved momentum on restart (arXiv:2108.00083
+    # Eq. 59 / Remark 10), not a hard "restart on any cost increase, reset q to 1" rule --
+    # see CONVERGENCE_LITERATURE.md. Mirrored exactly in daba_mm.cu so the two stay
+    # cross-checkable the same way the rest of this file already is.
     NC, NP = prob["ncam"], prob["npt"]
     ci, pi, uv = prob["cam_idx"], prob["pt_idx"], prob["uv"]
     f, k1, k2 = prob["cams"][:, 6].copy(), prob["cams"][:, 7].copy(), prob["cams"][:, 8].copy()
     R_curr = rotvec_to_R(prob["cams"][:, 0:3]); t_curr = prob["cams"][:, 3:6].copy(); X_curr = prob["pts"].copy()
     R_prev, t_prev, X_prev = R_curr.copy(), t_curr.copy(), X_curr.copy()
     cost_curr = total_cost(R_curr, t_curr, X_curr, ci, pi, uv, f, k1, k2)
+    cost_ema = cost_curr
     log = {"iter": [0], "cost": [cost_curr], "restart": [False]}
-    q = 1
+    q = 1.0
     for it in range(1, n_iter + 1):
         if accelerated:
             beta = (q - 1) / (q + 2)
@@ -139,10 +144,10 @@ def solve(prob, n_iter, accelerated=True, log_every=10, verbose=True):
         cost_new = total_cost(R_new, t_new, X_new, ci, pi, uv, f, k1, k2)
 
         restarted = False
-        if accelerated and cost_new > cost_curr:
+        if accelerated and cost_new > cost_ema:
             R_new, t_new, X_new = mm_step(R_curr, t_curr, X_curr, ci, pi, uv, f, k1, k2, NC, NP)
             cost_new = total_cost(R_new, t_new, X_new, ci, pi, uv, f, k1, k2)
-            q = 1
+            q = max(q / 2, 1.0)
             restarted = True
         else:
             q += 1
@@ -150,11 +155,12 @@ def solve(prob, n_iter, accelerated=True, log_every=10, verbose=True):
         R_prev, t_prev, X_prev = R_curr, t_curr, X_curr
         R_curr, t_curr, X_curr = R_new, t_new, X_new
         cost_curr = cost_new
+        cost_ema = (1 - eta) * cost_ema + eta * cost_curr
 
         if it % log_every == 0 or it == n_iter:
             log["iter"].append(it); log["cost"].append(cost_curr); log["restart"].append(restarted)
             if verbose:
-                print(f"  it{it:4d} cost={cost_curr:.5e} q={q} restart={restarted}")
+                print(f"  it{it:4d} cost={cost_curr:.5e} ema={cost_ema:.5e} q={q:.3f} restart={restarted}")
     return R_curr, t_curr, X_curr, log
 
 # ------------------------------------------------------------------ Jacobian check (criterion 2)
