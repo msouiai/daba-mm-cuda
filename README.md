@@ -143,10 +143,23 @@ in this repo. Both source papers' own findings — from distributed pose-graph
 optimization and generic convex optimization respectively — don't transfer to
 this problem's conditioning. Defaults kept at the original behavior
 (`eta=1.0`, `--restart-scheme function`); both alternatives are available and
-honestly characterized, not adopted, in `CONVERGENCE_LITERATURE.md` (which
-also covers Barzilai-Borwein step sizes, Catalyst, and accelerated coordinate
-descent — one untried lead, one flagged as too large a change to validate
-cheaply, one confirmed not applicable to this GPU full-batch setting).
+honestly characterized in `CONVERGENCE_LITERATURE.md`.
+
+Went on to implement the two remaining leads from that document too:
+**Barzilai-Borwein adaptive majorization factor** (`--factor-scheme bb`,
+`--factor-tau`) and **SQUAREM extrapolation** (`--accel-scheme squarem`, an
+entirely separate outer-loop mechanism from Nesterov). Both cross-validated
+against `reference_mm.py` and measured on all three real problems in this
+repo (ladybug-49, muellcontainer, venice-1778). **Both also lose to the
+existing simple scheme, on every problem tested** — five literature-backed
+mechanisms tried in total now, none adopted as the default. The SQUAREM work
+did surface something independently useful while chasing down an anomaly:
+**this codebase's fixed-`factor`/fixed-`lam` block solve has no recovery
+mechanism when the majorization bound fails to hold at a given point** (which
+does happen on real data, confirmed in complete isolation — two bare
+`mm_step` calls that themselves increase cost), unlike the LM-style adaptive
+damping Ceres and Caspar already use elsewhere in this project. Full results,
+including the isolation experiment, in `CONVERGENCE_LITERATURE.md`.
 
 ## Honest gaps / not implemented
 

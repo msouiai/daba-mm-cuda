@@ -3,12 +3,16 @@
 Checked the majorization-minimization (MM) and first-order-methods acceleration
 literature against what `daba_mm.cu` currently does, to see if there are concrete,
 non-speculative improvements available rather than just tuning existing knobs.
-Two rounds: MM-specific literature first (three papers with direct findings,
-ranked by strength of evidence + ease of implementation below), then broader
-first-order methods generally (further down). Two candidates from the first
-round were actually implemented, cross-validated, and measured — both turned
-out not to help on this repo's real problems, contrary to their source papers'
-own findings on different problem classes; see those sections for the numbers.
+Three rounds: MM-specific restart literature first, then broader first-order
+methods (Barzilai-Borwein, Catalyst, accelerated coordinate descent), then
+implementing the two remaining viable leads (BB-adaptive factor, SQUAREM) from
+that second round. **Five mechanisms total were implemented, cross-validated
+CUDA-vs-numpy, and measured on this repo's real problems** (not just the small
+synthetic validation dataset) — none improved on the existing simple scheme,
+each contrary to its own source paper's finding on a different problem class.
+The SQUAREM work also surfaced a genuine, independent robustness finding about
+this codebase's block solve — see that section. Jump to the summary table at
+the bottom for the full scorecard.
 
 ## Current state of the code (for reference)
 
@@ -258,15 +262,159 @@ there's no idle compute for importance sampling to reclaim. Read the core
 papers, correctly does not transfer to a full-batch GPU MM setting — recorded
 here so it isn't re-investigated later under the assumption it wasn't checked.
 
-## Next steps not yet tried
+## Implemented and measured: Barzilai-Borwein adaptive majorization factor
 
-- **Barzilai-Borwein majorization factor** (above) — the strongest untried
-  lead from this round; changes the per-iteration step strength rather than
-  the restart logic, genuinely orthogonal to everything tried so far.
-- Item 2 (closed-form warm start) and item 3 (SQUAREM), from the first round,
-  remain unimplemented — neither depends on any restart-scheme outcome.
-- Whether low `eta` or the gradient scheme help at a much larger iteration
-  budget (1000+, vs. the 200 used everywhere in this repo for comparability)
-  wasn't tested. Given the venice-1778 result at 200 iterations went the wrong
-  direction for the gradient scheme specifically, this is a lower-priority
-  follow-up than BB, not a first thing to retry.
+Ported to both files as `--factor-scheme fixed|bb` / `factor_scheme="bb"`, with
+`--factor-tau` / `factor_tau` controlling how much the raw per-iteration secant
+estimate is smoothed (`tau=1.0` = raw, `tau→0` = heavily smoothed toward the
+previous factor) — see the derivation and caveats in the `bb_factor_from_dots`
+docstring above. The raw (`tau=1.0`) estimate oscillates badly on its own
+(hits both the min and max clamp repeatedly), so before concluding anything I
+swept `tau` down to see whether standard BB stabilization (smoothing) could
+rescue it — the fair test, not a strawman of the idea.
+
+**Result, ladybug-49 and the muellcontainer BAL problem, 200 iterations:**
+
+| tau | ladybug-49 final cost | muellcontainer final cost |
+|---|---:|---:|
+| 1.00 (raw) | 1.639792e4 | 7.176971e4 |
+| 0.50 | 1.638663e4 | 7.082154e4 |
+| 0.30 | 1.638284e4 | 6.990585e4 |
+| 0.15 | 1.637434e4 | 6.958113e4 |
+| 0.05 | 1.636755e4 | 6.891681e4 |
+| 0.02 | — | 6.854568e4 |
+| **fixed (baseline)** | **1.636729e4** | **6.854524e4** |
+
+**Never beats the fixed baseline at any smoothing level, on either problem.**
+Heavier smoothing monotonically closes the gap but only *asymptotes toward*
+the baseline as `tau→0` — the adaptive scheme's best-case behavior is
+converging to "become the fixed constant," never surpassing it. This is a
+clean, unambiguous negative result, not a borderline one.
+
+**CUDA cross-validation note**: unlike the two restart schemes above, BB's
+CUDA and numpy trajectories do **not** match to 6 sig figs past ~60
+iterations (confirmed matching exactly through the first ~60, then visibly
+diverging) — GPU `atomicAdd` reduction order is non-deterministic at the bit
+level (already a known property of this codebase, noted in the original
+design write-up), and BB feeds a continuous secant ratio back into the
+trajectory *every* iteration, unlike the restart schemes' occasional discrete
+threshold comparisons, so tiny floating-point noise compounds into a
+genuinely different trajectory rather than washing out. Both implementations
+still land in the same "worse than baseline" regime independently, which is
+the substantive conclusion — but it's the first scheme in this investigation
+where the two didn't bit-match, worth recording honestly rather than papering
+over. Also has real per-iteration overhead: the extra `BBDots` kernel pass
+pushed venice-1778 from 40.5ms/iter to 60.6ms/iter at tau=1.0 — confirmed on
+that problem too:
+
+| | venice-1778 final cost (200 it) |
+|---|---:|
+| BB, tau=1.0 | 1.599080e7 |
+| BB, tau=0.05 | 1.569475e7 |
+| fixed (baseline) | **1.553651e7** |
+
+Three for three: BB-adaptive factor is worse than the fixed constant on every
+problem tested, at every smoothing level tested.
+
+## Implemented and measured: SQUAREM extrapolation — and a real algorithmic finding along the way
+
+Ported to both files as `--accel-scheme nesterov|squarem` / `solve_squarem()`
+— the Varadhan & Roland 2008 "S3" scheme, orthogonal to Nesterov (a
+replacement for the whole outer-loop acceleration mechanism, not layered on
+top of it). One SQUAREM "meta-iteration" costs 2 `mm_step` calls vs.
+Nesterov's 1 per iteration, so all comparisons below are at matched
+`mm_step`-equivalent count (100 SQUAREM meta-iterations = 200 `mm_step` calls
+≈ Nesterov's 200 iterations), not matched "iteration" labels.
+
+**While building this, hit a genuine anomaly and chased it down rather than
+assuming a bug in SQUAREM's math**: on the muellcontainer BAL problem, the
+safeguarded fallback path (accept the plain double-`mm_step` result, `X2`,
+whenever the SQUAREM extrapolation doesn't beat it) was producing costs that
+increased relative to where the meta-iteration *started*. Isolated it
+completely: **two bare, sequential `mm_step` calls (factor=2, no SQUAREM math
+involved at all) can themselves increase cost**, starting from certain real
+points on this problem —
+
+```
+cost before = 2.304521e+06
+cost after 1 mm_step = 3.089078e+06
+cost after 2 mm_step = 6.356137e+06
+```
+
+— confirmed in complete isolation, and confirmed that plain sequential MM
+*is* monotone from the problem's original starting point (20 iterations,
+strictly decreasing every step). So this isn't "MM is broken" — it's that the
+`factor=2` majorization bound doesn't hold **pointwise everywhere** on real
+data, only along the specific trajectory plain sequential MM happens to
+visit from a normal start; a point reached via extrapolation (Nesterov's or
+SQUAREM's) can land somewhere with locally stiffer curvature than `factor=2`
+accounts for, and once there, this codebase's block solve — fixed `factor`,
+fixed `lam`, no LM-style adaptive re-damping on a failed step — has no way to
+recover. This is a real robustness gap in the underlying MM step, independent
+of SQUAREM or any of the acceleration schemes tried in this document; it's
+usually invisible because Nesterov's own trajectory rarely revisits such a
+point twice in a row, but SQUAREM's more aggressive extrapolation exposes it
+directly. **Concrete follow-up this points to**: the LM-style adaptive
+damping Ceres and Caspar already use elsewhere in this project (increase
+damping on a rejected step, decrease on an accepted one) is the natural fix,
+and ties back to the "not pursued" Mairal/line-search-MM note from the first
+round of this document — this finding is independent evidence that item is
+worth doing, not just theoretically nice.
+
+Built a diagnostic-only `strict_monotone=True` variant of the numpy safeguard
+(not ported to CUDA, not shipped) that also requires beating the
+meta-iteration's own starting cost, to confirm the above cleanly: with it on,
+the run gets **permanently stuck** the first time it hits such a point (every
+subsequent meta-iteration rejects identically, since the state literally
+never changes) — a clear illustration that there's no self-correction
+available, not just an occasional hiccup. The shipped default
+(`strict_monotone=False`) matches the textbook SQUAREM safeguard *and* is
+consistent with how this file's own Nesterov-restart branch already behaves
+(it also accepts whatever `mm_step(curr)` produces with no comparison against
+the pre-restart cost) — holding SQUAREM to a stricter standard than the
+baseline it's being compared against would have been an unfair test.
+
+**Result, matched `mm_step`-equivalent budget (~200), three problems:**
+
+| problem | Nesterov baseline | SQUAREM | delta |
+|---|---:|---:|---:|
+| ladybug-49 | 1.636729e4 | 1.637319e4 | ~0.04% worse |
+| muellcontainer BAL | 6.854524e4 | 1.648657e6 | **24x worse** (hit the majorization-failure point above) |
+| venice-1778 | 1.553651e7 | 1.595299e7 | ~2.7% worse |
+
+Worse on all three, ranging from marginal (ladybug) to dramatic
+(muellcontainer, directly explained by the finding above). SQUAREM's CUDA
+port **does** match the numpy reference exactly on all tested problems (unlike
+BB) — its accept/reject decisions are discrete cost comparisons with enough
+margin that GPU reduction-order noise doesn't flip them, at least at the
+scales tested here.
+
+## Closed-form warm start: still not implemented
+
+Revisited whether to take a swing at this now that more has been learned.
+Decided against fabricating one: the DABA IJRR 2025 abstract states this
+"always improves bundle adjustment estimates," which is a specific, falsifiable
+claim about *their* construction — inventing a plausible-sounding warm start
+of my own and labeling it as satisfying that claim would misrepresent what's
+actually known. Still blocked on the same thing as before: the formula isn't
+in the openly-readable parts of the paper. Left undone rather than guessed at.
+
+## Summary across both rounds
+
+| mechanism | source | status | verdict |
+|---|---|---|---|
+| EMA-tolerant restart | Fan et al. arXiv:2108.00083 | implemented, cross-validated | doesn't transfer; ~0.6% worse at low eta |
+| Gradient-based restart | O'Donoghue & Candès arXiv:1204.3982 | implemented, cross-validated | doesn't transfer; up to 0.56% worse |
+| BB-adaptive factor | our own adaptation | implemented, cross-validated* | never beats baseline at any tau |
+| SQUAREM | Varadhan & Roland 2008 | implemented, cross-validated | worse on all 3 problems; surfaced a real robustness gap |
+| Closed-form warm start | DABA IJRR 2025 | blocked | formula not accessible |
+| Barzilai-Borwein (this round's lead) | — | superseded by above | tested, negative |
+| Catalyst | Lin/Mairal/Harchaoui | not attempted | too large a change to validate cheaply |
+| Accelerated coordinate descent | Nesterov 2012; Fercoq & Richtárik 2015 | ruled out | doesn't apply to full-batch GPU MM |
+
+Five literature-backed mechanisms implemented and honestly measured against
+this codebase's own real problems; none improved on the existing simple
+scheme. The most valuable output of this investigation turned out not to be
+"we found a winner" but the majorization-robustness finding above — a
+concrete, actionable lead (adaptive LM-style damping) that emerged from
+actually testing these ideas rather than reading about them.

@@ -103,24 +103,182 @@ def total_cost(R, t, X, ci, pi, uv, f, k1, k2):
     return 0.5 * np.sum(res ** 2)
 
 # ------------------------------------------------------------------ MM step (verbatim from spec Sec.4)
-def mm_step(R, t, X, ci, pi, uv, f, k1, k2, NC, NP, factor=2.0, lam=1e-6):
+# Split into accumulate (build J^T J, J^T r at the input point -- independent of factor)
+# and solve_retract (apply factor/lam, solve blocks, retract) so a factor can be chosen
+# *after* seeing the gradient at this point but *before* solving -- needed by the BB
+# adaptive-factor scheme below, and it mirrors how daba_mm.cu is already structured
+# (KernelJacobianAccumulate separate from KernelSolveRetractCameras/Points).
+def accumulate_grad_hess(R, t, X, ci, pi, uv, f, k1, k2, NC, NP):
     res, Jc, Jp = project_and_jac(R, t, X, ci, pi, uv, f, k1, k2)
     Hc = np.zeros((NC, 6, 6)); gc = np.zeros((NC, 6))
     Hp = np.zeros((NP, 3, 3)); gp = np.zeros((NP, 3))
     np.add.at(Hc, ci, np.einsum('oai,oaj->oij', Jc, Jc)); np.add.at(gc, ci, np.einsum('oai,oa->oi', Jc, res))
     np.add.at(Hp, pi, np.einsum('oai,oaj->oij', Jp, Jp)); np.add.at(gp, pi, np.einsum('oai,oa->oi', Jp, res))
+    return Hc, gc, Hp, gp
+
+def solve_retract(R, t, X, Hc, gc, Hp, gp, factor=2.0, lam=1e-6):
+    Hc = factor * Hc; Hc = Hc.copy(); Hc[:, range(6), range(6)] += lam
+    Hp = factor * Hp; Hp = Hp.copy(); Hp[:, range(3), range(3)] += lam
+    dC = -np.einsum('cij,cj->ci', np.linalg.inv(Hc), gc)
+    dX = -np.einsum('pij,pj->pi', np.linalg.inv(Hp), gp)
+    return np.einsum('cij,cjk->cik', rotvec_to_R(dC[:, :3]), R), t + dC[:, 3:6], X + dX
+
+def mm_step(R, t, X, ci, pi, uv, f, k1, k2, NC, NP, factor=2.0, lam=1e-6):
     # gc, gp returned too: they are grad f evaluated at the *input* (R, t, X), needed
     # verbatim by the gradient-restart scheme below (O'Donoghue & Candes 2012,
     # arXiv:1204.3982) -- no extra computation, just not discarding what's already here.
-    Hc = factor * Hc; Hc[:, range(6), range(6)] += lam
-    Hp = factor * Hp; Hp[:, range(3), range(3)] += lam
-    dC = -np.einsum('cij,cj->ci', np.linalg.inv(Hc), gc)
-    dX = -np.einsum('pij,pj->pi', np.linalg.inv(Hp), gp)
-    return np.einsum('cij,cjk->cik', rotvec_to_R(dC[:, :3]), R), t + dC[:, 3:6], X + dX, gc, gp
+    Hc, gc, Hp, gp = accumulate_grad_hess(R, t, X, ci, pi, uv, f, k1, k2, NC, NP)
+    R_new, t_new, X_new = solve_retract(R, t, X, Hc, gc, Hp, gp, factor, lam)
+    return R_new, t_new, X_new, gc, gp
+
+# ------------------------------------------------------------------ BB-adaptive majorization factor
+# Not from a specific paper's exact recipe for this setting -- our own adaptation of the
+# Barzilai-Borwein secant principle (Barzilai & Borwein 1988) to this block-MM problem's
+# `factor` knob, which plays an inverse role to a BB step size (factor multiplies the
+# Gauss-Newton Hessian estimate before the damped solve, i.e. bigger factor = smaller,
+# more conservative step). Uses the sequence of extrapolation points y_k where gradients
+# are already computed as a byproduct of accumulate_grad_hess -- no extra Jacobian pass.
+#
+# s_k = y_k - y_{k-1} in tangent space (Log(R_yk @ R_yk-1^T) for rotations, Euclidean for
+# t/X); ydiff_k = grad_f(y_k) - grad_f(y_{k-1}), computed as a flat Euclidean difference
+# even though the two gradients technically live in different (nearby) tangent spaces --
+# the standard small-step approximation used throughout this file's Riemannian-MM
+# machinery (also used by the extrapolation step and the gradient-restart criterion),
+# not swept under the rug: real, but expected to be negligible when steps are small,
+# which they are here once past the first few iterations.
+#
+# factor_bb = (s . ydiff) / (s . s) is the *inverse* of the classic BB1 step size
+# (s.s)/(s.ydiff) -- appropriate since `factor` plays 1/step_size's role here, and is a
+# Rayleigh-quotient curvature estimate (ydiff ~ H @ s implies s.ydiff/s.s ~ s^T H s /
+# s^T s). Clamped to a bounded multiplicative band around the theoretically-motivated
+# base factor (2.0, "per the spec") rather than left unconstrained: unlike a plain
+# gradient-descent step size, `factor` here is a majorization constant with a real lower
+# bound requirement for the MM monotonic-decrease guarantee to hold, so this is allowed
+# to adapt (mostly upward, i.e. more conservative, when the secant says the local
+# curvature is stiffer than the base estimate) but not collapse below a safe floor.
+def bb_factor_from_dots(s_dot_s, s_dot_ydiff, base_factor, prev_factor,
+                         factor_min_mult=0.5, factor_max_mult=25.0, tau=1.0):
+    # tau=1.0: raw per-iteration BB estimate, no smoothing (the "textbook" form).
+    # tau<1.0: exponentially smooth the clamped target into factor_prev instead of
+    # jumping straight to it -- standard practice for taming BB's well-known
+    # iteration-to-iteration noisiness (the secant ratio from two nearby, noisy
+    # points is a rough curvature estimate, not a precise one); tested empirically
+    # here rather than assumed, see CONVERGENCE_LITERATURE.md.
+    if s_dot_s < 1e-30:
+        return prev_factor
+    raw = s_dot_ydiff / s_dot_s
+    if not np.isfinite(raw) or raw <= 0:
+        return prev_factor
+    target = float(np.clip(raw, factor_min_mult * base_factor, factor_max_mult * base_factor))
+    return (1 - tau) * prev_factor + tau * target
+
+# ------------------------------------------------------------------ SQUAREM extrapolation
+# Varadhan & Roland 2008 "S3" scheme: treats one plain MM step as a fixed-point map
+# Phi(state), extrapolates from two consecutive applications using only the resulting
+# iterate sequence (no gradient info beyond what mm_step already computes internally),
+# with a monotonicity safeguard. Orthogonal to Nesterov -- an entirely separate outer-
+# loop acceleration mechanism, not layered on top of it (--accel-scheme nesterov vs.
+# squarem, not combined). r, v are tangent vectors approximated as living in a common
+# linear space across nearby base points (same small-step approximation as the
+# gradient-restart and BB-factor schemes above); alpha = -||r||/||v|| is the S3 formula,
+# the most numerically robust of the three classic SQUAREM variants.
+#
+# Cost accounting: one SQUAREM "meta-iteration" = 2 mm_step calls (computing X1, X2) +
+# 2 cost evaluations (X2 for the safeguard check, X_sq for the candidate) -- roughly 2x
+# the cost of one Nesterov outer iteration (1 mm_step, cost already known from the
+# block-solve's own residual pass in the CUDA port; in this numpy reference every
+# total_cost call is a full extra residual pass regardless of scheme). Compare at
+# matched mm_step-equivalent count, not matched "iteration" label -- see
+# CONVERGENCE_LITERATURE.md.
+def tangent_diff(R1, t1, X1, R0, t0, X0):
+    omega = R_log(np.einsum('cij,ckj->cik', R1, R0))  # Log(R1 @ R0^T)
+    return omega, t1 - t0, X1 - X0
+
+def retract(R0, t0, X0, upd_omega, upd_t, upd_X):
+    return np.einsum('cij,cjk->cik', rotvec_to_R(upd_omega), R0), t0 + upd_t, X0 + upd_X
+
+def solve_squarem(prob, n_meta_iter, log_every=10, verbose=True, base_factor=2.0, lam=1e-6,
+                   strict_monotone=False):
+    # Textbook SQUAREM safeguard (strict_monotone=False, default): accept the SQUAREM
+    # point if it beats X2 (the plain double-mm_step result), else fall back to X2
+    # unconditionally -- matching how this file's own Nesterov restart branch already
+    # works (accepts whatever mm_step(curr) produces with no comparison against the
+    # pre-restart cost either). Consistent standard to compare against, not a stricter
+    # one than the baseline.
+    #
+    # strict_monotone=True: a *diagnostic* variant, not the default -- also requires
+    # X2 to beat X0 (the state this meta-iteration started from), rejecting and
+    # keeping X0 unchanged otherwise. Built to chase down an anomaly: on this repo's
+    # real, heavily-perturbed BA problem, X2 (two *plain*, unaccelerated mm_step calls,
+    # factor=2 fixed, no SQUAREM math involved) can itself have HIGHER cost than its
+    # own starting point -- confirmed in complete isolation before concluding this, not
+    # assumed. I.e. the factor=2 majorization bound this whole codebase relies on for
+    # monotone decrease does not universally hold pointwise on real data, only along
+    # the "nice" trajectory plain sequential MM happens to visit from the original
+    # start. Turning this safeguard on doesn't fix that -- it just reveals it clearly:
+    # the run gets permanently stuck (every subsequent meta-iteration rejects
+    # identically, since X0 never changes) the first time it hits such a point, because
+    # this fixed-factor/fixed-damping MM step has no LM-style recovery mechanism (no
+    # adaptive re-damping on a failed step) to escape it -- unlike Ceres/Caspar
+    # elsewhere in this project. See CONVERGENCE_LITERATURE.md.
+    NC, NP = prob["ncam"], prob["npt"]
+    ci, pi, uv = prob["cam_idx"], prob["pt_idx"], prob["uv"]
+    f, k1, k2 = prob["cams"][:, 6].copy(), prob["cams"][:, 7].copy(), prob["cams"][:, 8].copy()
+    R0 = rotvec_to_R(prob["cams"][:, 0:3]); t0 = prob["cams"][:, 3:6].copy(); X0 = prob["pts"].copy()
+    cost0 = total_cost(R0, t0, X0, ci, pi, uv, f, k1, k2)
+    log = {"iter": [0], "cost": [cost0], "mmstep_equiv": [0], "choice": ["init"]}
+    mmstep_count = 0
+    for meta in range(1, n_meta_iter + 1):
+        R1, t1, X1, _, _ = mm_step(R0, t0, X0, ci, pi, uv, f, k1, k2, NC, NP, base_factor, lam)
+        R2, t2, X2, _, _ = mm_step(R1, t1, X1, ci, pi, uv, f, k1, k2, NC, NP, base_factor, lam)
+        mmstep_count += 2
+
+        r_omega, r_t, r_X = tangent_diff(R1, t1, X1, R0, t0, X0)
+        s2_omega, s2_t, s2_X = tangent_diff(R2, t2, X2, R1, t1, X1)
+        v_omega, v_t, v_X = s2_omega - r_omega, s2_t - r_t, s2_X - r_X
+
+        r_norm = np.sqrt(np.sum(r_omega ** 2) + np.sum(r_t ** 2) + np.sum(r_X ** 2))
+        v_norm = np.sqrt(np.sum(v_omega ** 2) + np.sum(v_t ** 2) + np.sum(v_X ** 2))
+        cost2 = total_cost(R2, t2, X2, ci, pi, uv, f, k1, k2)
+
+        cost_sq = np.inf
+        if v_norm >= 1e-30:
+            alpha = -r_norm / v_norm
+            upd_omega = -2 * alpha * r_omega + alpha ** 2 * v_omega
+            upd_t = -2 * alpha * r_t + alpha ** 2 * v_t
+            upd_X = -2 * alpha * r_X + alpha ** 2 * v_X
+            R_sq, t_sq, X_sq = retract(R0, t0, X0, upd_omega, upd_t, upd_X)
+            cost_sq = total_cost(R_sq, t_sq, X_sq, ci, pi, uv, f, k1, k2)
+            if not np.isfinite(cost_sq):
+                cost_sq = np.inf
+
+        if strict_monotone:
+            if cost_sq <= cost2 and cost_sq <= cost0:
+                R_new, t_new, X_new, cost_new, choice = R_sq, t_sq, X_sq, cost_sq, "squarem"
+            elif cost2 <= cost0:
+                R_new, t_new, X_new, cost_new, choice = R2, t2, X2, cost2, "plain2"
+            else:
+                R_new, t_new, X_new, cost_new, choice = R0, t0, X0, cost0, "reject"
+        else:
+            if cost_sq <= cost2:
+                R_new, t_new, X_new, cost_new, choice = R_sq, t_sq, X_sq, cost_sq, "squarem"
+            else:
+                R_new, t_new, X_new, cost_new, choice = R2, t2, X2, cost2, "plain2"
+
+        R0, t0, X0 = R_new, t_new, X_new
+        cost0 = cost_new
+        if meta % log_every == 0 or meta == n_meta_iter:
+            log["iter"].append(meta); log["cost"].append(cost_new)
+            log["mmstep_equiv"].append(mmstep_count); log["choice"].append(choice)
+            if verbose:
+                print(f"  meta{meta:4d} cost={cost_new:.5e} mmstep_equiv={mmstep_count} "
+                      f"choice={choice}")
+    return R0, t0, X0, log
 
 # ------------------------------------------------------------------ accelerated outer loop
 def solve(prob, n_iter, accelerated=True, log_every=10, verbose=True, eta=1.0,
-          restart_scheme="function"):
+          restart_scheme="function", factor_scheme="fixed", base_factor=2.0, lam=1e-6,
+          factor_tau=1.0):
     # restart_scheme="function": EMA reference cost + halved momentum on restart
     #   (arXiv:2108.00083 Eq. 59 / Remark 10) -- see CONVERGENCE_LITERATURE.md.
     # restart_scheme="gradient": restart whenever grad_f(y)^T (x_new - x_curr) > 0
@@ -128,9 +286,13 @@ def solve(prob, n_iter, accelerated=True, log_every=10, verbose=True, eta=1.0,
     #   gradient obtuse-angle test. grad_f(y) is (gc, gp) from mm_step, already
     #   computed at y as a byproduct of the block solve; (x_new - x_curr) is taken
     #   in the tangent space at R_curr for rotations (R_log(R_new @ R_curr^T)),
-    #   Euclidean for translations/points. Both schemes mirrored exactly in
-    #   daba_mm.cu so the two stay cross-checkable the same way the rest of this
-    #   file already is.
+    #   Euclidean for translations/points.
+    # factor_scheme="bb": adaptive majorization factor via a Barzilai-Borwein secant
+    #   estimate using consecutive extrapolation points y_k (see bb_factor() above for
+    #   the derivation and caveats). "fixed": base_factor used every iteration
+    #   (original behavior).
+    # All schemes mirrored exactly in daba_mm.cu so the two stay cross-checkable the
+    # same way the rest of this file already is.
     NC, NP = prob["ncam"], prob["npt"]
     ci, pi, uv = prob["cam_idx"], prob["pt_idx"], prob["uv"]
     f, k1, k2 = prob["cams"][:, 6].copy(), prob["cams"][:, 7].copy(), prob["cams"][:, 8].copy()
@@ -138,8 +300,11 @@ def solve(prob, n_iter, accelerated=True, log_every=10, verbose=True, eta=1.0,
     R_prev, t_prev, X_prev = R_curr.copy(), t_curr.copy(), X_curr.copy()
     cost_curr = total_cost(R_curr, t_curr, X_curr, ci, pi, uv, f, k1, k2)
     cost_ema = cost_curr
-    log = {"iter": [0], "cost": [cost_curr], "restart": [False]}
+    log = {"iter": [0], "cost": [cost_curr], "restart": [False], "factor": [base_factor]}
     q = 1.0
+    R_y_prev = R_curr.copy(); t_y_prev = t_curr.copy(); X_y_prev = X_curr.copy()
+    gc_y_prev = gp_y_prev = None
+    factor = base_factor
     for it in range(1, n_iter + 1):
         if accelerated:
             beta = (q - 1) / (q + 2)
@@ -150,7 +315,24 @@ def solve(prob, n_iter, accelerated=True, log_every=10, verbose=True, eta=1.0,
         else:
             R_y, t_y, X_y = R_curr, t_curr, X_curr
 
-        R_new, t_new, X_new, gc, gp = mm_step(R_y, t_y, X_y, ci, pi, uv, f, k1, k2, NC, NP)
+        Hc, gc, Hp, gp = accumulate_grad_hess(R_y, t_y, X_y, ci, pi, uv, f, k1, k2, NC, NP)
+
+        if factor_scheme == "bb" and gc_y_prev is not None:
+            s_omega = R_log(np.einsum('cij,ckj->cik', R_y, R_y_prev))  # log(R_y @ R_y_prev^T)
+            s_t = t_y - t_y_prev
+            s_X = X_y - X_y_prev
+            yd_c = gc - gc_y_prev
+            yd_p = gp - gp_y_prev
+            s_dot_s = float(np.sum(s_omega ** 2) + np.sum(s_t ** 2) + np.sum(s_X ** 2))
+            s_dot_yd = float(np.sum(s_omega * yd_c[:, :3]) + np.sum(s_t * yd_c[:, 3:6])
+                              + np.sum(s_X * yd_p))
+            factor = bb_factor_from_dots(s_dot_s, s_dot_yd, base_factor, factor, tau=factor_tau)
+        else:
+            factor = base_factor
+        R_y_prev, t_y_prev, X_y_prev = R_y, t_y, X_y
+        gc_y_prev, gp_y_prev = gc, gp
+
+        R_new, t_new, X_new = solve_retract(R_y, t_y, X_y, Hc, gc, Hp, gp, factor, lam)
         cost_new = total_cost(R_new, t_new, X_new, ci, pi, uv, f, k1, k2)
 
         trigger = False
@@ -166,7 +348,8 @@ def solve(prob, n_iter, accelerated=True, log_every=10, verbose=True, eta=1.0,
 
         restarted = False
         if trigger:
-            R_new, t_new, X_new, _, _ = mm_step(R_curr, t_curr, X_curr, ci, pi, uv, f, k1, k2, NC, NP)
+            Hc2, gc2, Hp2, gp2 = accumulate_grad_hess(R_curr, t_curr, X_curr, ci, pi, uv, f, k1, k2, NC, NP)
+            R_new, t_new, X_new = solve_retract(R_curr, t_curr, X_curr, Hc2, gc2, Hp2, gp2, factor, lam)
             cost_new = total_cost(R_new, t_new, X_new, ci, pi, uv, f, k1, k2)
             q = max(q / 2, 1.0)
             restarted = True
@@ -180,8 +363,10 @@ def solve(prob, n_iter, accelerated=True, log_every=10, verbose=True, eta=1.0,
 
         if it % log_every == 0 or it == n_iter:
             log["iter"].append(it); log["cost"].append(cost_curr); log["restart"].append(restarted)
+            log["factor"].append(factor)
             if verbose:
-                print(f"  it{it:4d} cost={cost_curr:.5e} ema={cost_ema:.5e} q={q:.3f} restart={restarted}")
+                print(f"  it{it:4d} cost={cost_curr:.5e} ema={cost_ema:.5e} q={q:.3f} "
+                      f"factor={factor:.3f} restart={restarted}")
     return R_curr, t_curr, X_curr, log
 
 # ------------------------------------------------------------------ Jacobian check (criterion 2)

@@ -435,6 +435,166 @@ __global__ void KernelGradientRestartDotPoints(const Scalar* __restrict__ X_new,
   atomicAdd(dot_out, g[0] * dx0 + g[1] * dx1 + g[2] * dx2);
 }
 
+// ============================================================== Kernel F: BB secant dot products
+// s.s and s.ydiff for the BB-adaptive majorization factor (see BBFactor below and
+// CONVERGENCE_LITERATURE.md for the derivation/caveats). s = tangent-space step from
+// y_prev to y (Log(R_y @ R_yprev^T) for rotations, Euclidean for t/X); ydiff = grad_f(y)
+// - grad_f(y_prev), i.e. (gc,gp) - (gc_prev,gp_prev), both already computed by
+// AccumulateGradHess -- no extra Jacobian pass.
+__global__ void KernelBBDotsCameras(const Scalar* __restrict__ R_y,
+                                     const Scalar* __restrict__ R_yprev,
+                                     const Scalar* __restrict__ t_y,
+                                     const Scalar* __restrict__ t_yprev,
+                                     const Scalar* __restrict__ gc,
+                                     const Scalar* __restrict__ gc_prev, int ncam,
+                                     Scalar* __restrict__ ss_out, Scalar* __restrict__ syd_out) {
+  int c = blockIdx.x * blockDim.x + threadIdx.x;
+  if (c >= ncam) return;
+  Scalar RyprevT[9];
+  const Scalar* Rp = R_yprev + 9 * c;
+  RyprevT[0] = Rp[0]; RyprevT[1] = Rp[3]; RyprevT[2] = Rp[6];
+  RyprevT[3] = Rp[1]; RyprevT[4] = Rp[4]; RyprevT[5] = Rp[7];
+  RyprevT[6] = Rp[2]; RyprevT[7] = Rp[5]; RyprevT[8] = Rp[8];
+  Scalar RR[9];
+  Mat3Mul(R_y + 9 * c, RyprevT, RR);  // R_y @ R_yprev^T
+  Scalar somega[3];
+  LogSO3(RR, somega);
+  Scalar s[6] = {somega[0], somega[1], somega[2], t_y[3 * c] - t_yprev[3 * c],
+                 t_y[3 * c + 1] - t_yprev[3 * c + 1], t_y[3 * c + 2] - t_yprev[3 * c + 2]};
+  const Scalar* g = gc + 6 * c;
+  const Scalar* gp0 = gc_prev + 6 * c;
+  Scalar ss = 0, syd = 0;
+#pragma unroll
+  for (int i = 0; i < 6; ++i) {
+    ss += s[i] * s[i];
+    syd += s[i] * (g[i] - gp0[i]);
+  }
+  atomicAdd(ss_out, ss);
+  atomicAdd(syd_out, syd);
+}
+
+__global__ void KernelBBDotsPoints(const Scalar* __restrict__ X_y,
+                                    const Scalar* __restrict__ X_yprev,
+                                    const Scalar* __restrict__ gp,
+                                    const Scalar* __restrict__ gp_prev, int npt,
+                                    Scalar* __restrict__ ss_out, Scalar* __restrict__ syd_out) {
+  int p = blockIdx.x * blockDim.x + threadIdx.x;
+  if (p >= npt) return;
+  Scalar s[3] = {X_y[3 * p] - X_yprev[3 * p], X_y[3 * p + 1] - X_yprev[3 * p + 1],
+                 X_y[3 * p + 2] - X_yprev[3 * p + 2]};
+  const Scalar* g = gp + 3 * p;
+  const Scalar* g0 = gp_prev + 3 * p;
+  Scalar ss = s[0] * s[0] + s[1] * s[1] + s[2] * s[2];
+  Scalar syd = s[0] * (g[0] - g0[0]) + s[1] * (g[1] - g0[1]) + s[2] * (g[2] - g0[2]);
+  atomicAdd(ss_out, ss);
+  atomicAdd(syd_out, syd);
+}
+
+// ============================================================== Kernel G: SQUAREM r, v, norms
+// r = tangent diff X1-X0, s2 = tangent diff X2-X1, v = s2-r; also accumulates ||r||^2,
+// ||v||^2 (S3 scheme -- see solve_squarem in reference_mm.py for the full derivation,
+// caveats, and the mm_step-can-increase-cost finding this was built to chase down).
+__global__ void KernelSquaremRVCameras(const Scalar* __restrict__ R0, const Scalar* __restrict__ R1,
+                                        const Scalar* __restrict__ R2, const Scalar* __restrict__ t0,
+                                        const Scalar* __restrict__ t1, const Scalar* __restrict__ t2,
+                                        int ncam, Scalar* __restrict__ r_out, Scalar* __restrict__ v_out,
+                                        Scalar* __restrict__ rnorm2_out, Scalar* __restrict__ vnorm2_out) {
+  int c = blockIdx.x * blockDim.x + threadIdx.x;
+  if (c >= ncam) return;
+  Scalar R0T[9];
+  const Scalar* Rp0 = R0 + 9 * c;
+  R0T[0] = Rp0[0]; R0T[1] = Rp0[3]; R0T[2] = Rp0[6];
+  R0T[3] = Rp0[1]; R0T[4] = Rp0[4]; R0T[5] = Rp0[7];
+  R0T[6] = Rp0[2]; R0T[7] = Rp0[5]; R0T[8] = Rp0[8];
+  Scalar RR1[9];
+  Mat3Mul(R1 + 9 * c, R0T, RR1);  // R1 @ R0^T
+  Scalar r_omega[3];
+  LogSO3(RR1, r_omega);
+
+  Scalar R1T[9];
+  const Scalar* Rp1 = R1 + 9 * c;
+  R1T[0] = Rp1[0]; R1T[1] = Rp1[3]; R1T[2] = Rp1[6];
+  R1T[3] = Rp1[1]; R1T[4] = Rp1[4]; R1T[5] = Rp1[7];
+  R1T[6] = Rp1[2]; R1T[7] = Rp1[5]; R1T[8] = Rp1[8];
+  Scalar RR2[9];
+  Mat3Mul(R2 + 9 * c, R1T, RR2);  // R2 @ R1^T
+  Scalar s2_omega[3];
+  LogSO3(RR2, s2_omega);
+
+  Scalar r6[6] = {r_omega[0], r_omega[1], r_omega[2], t1[3 * c] - t0[3 * c],
+                   t1[3 * c + 1] - t0[3 * c + 1], t1[3 * c + 2] - t0[3 * c + 2]};
+  Scalar s2_6[6] = {s2_omega[0], s2_omega[1], s2_omega[2], t2[3 * c] - t1[3 * c],
+                     t2[3 * c + 1] - t1[3 * c + 1], t2[3 * c + 2] - t1[3 * c + 2]};
+  Scalar* ro = r_out + 6 * c;
+  Scalar* vo = v_out + 6 * c;
+  Scalar rn2 = 0, vn2 = 0;
+#pragma unroll
+  for (int i = 0; i < 6; ++i) {
+    ro[i] = r6[i];
+    vo[i] = s2_6[i] - r6[i];
+    rn2 += ro[i] * ro[i];
+    vn2 += vo[i] * vo[i];
+  }
+  atomicAdd(rnorm2_out, rn2);
+  atomicAdd(vnorm2_out, vn2);
+}
+
+__global__ void KernelSquaremRVPoints(const Scalar* __restrict__ X0, const Scalar* __restrict__ X1,
+                                       const Scalar* __restrict__ X2, int npt,
+                                       Scalar* __restrict__ r_out, Scalar* __restrict__ v_out,
+                                       Scalar* __restrict__ rnorm2_out, Scalar* __restrict__ vnorm2_out) {
+  int p = blockIdx.x * blockDim.x + threadIdx.x;
+  if (p >= npt) return;
+  Scalar rn2 = 0, vn2 = 0;
+  Scalar* ro = r_out + 3 * p;
+  Scalar* vo = v_out + 3 * p;
+#pragma unroll
+  for (int i = 0; i < 3; ++i) {
+    Scalar r = X1[3 * p + i] - X0[3 * p + i];
+    Scalar s2 = X2[3 * p + i] - X1[3 * p + i];
+    Scalar v = s2 - r;
+    ro[i] = r;
+    vo[i] = v;
+    rn2 += r * r;
+    vn2 += v * v;
+  }
+  atomicAdd(rnorm2_out, rn2);
+  atomicAdd(vnorm2_out, vn2);
+}
+
+// Kernel H: retract X0 by (-2*alpha*r + alpha^2*v), the S3 SQUAREM candidate point.
+__global__ void KernelSquaremRetractCameras(const Scalar* __restrict__ R0, const Scalar* __restrict__ t0,
+                                             const Scalar* __restrict__ r, const Scalar* __restrict__ v,
+                                             Scalar alpha, int ncam, Scalar* __restrict__ R_out,
+                                             Scalar* __restrict__ t_out) {
+  int c = blockIdx.x * blockDim.x + threadIdx.x;
+  if (c >= ncam) return;
+  const Scalar* rc = r + 6 * c;
+  const Scalar* vc = v + 6 * c;
+  Scalar upd[6];
+#pragma unroll
+  for (int i = 0; i < 6; ++i) upd[i] = -2 * alpha * rc[i] + alpha * alpha * vc[i];
+  Scalar dR[9];
+  ExpSO3(upd, dR);
+  Mat3Mul(dR, R0 + 9 * c, R_out + 9 * c);
+  t_out[3 * c] = t0[3 * c] + upd[3];
+  t_out[3 * c + 1] = t0[3 * c + 1] + upd[4];
+  t_out[3 * c + 2] = t0[3 * c + 2] + upd[5];
+}
+
+__global__ void KernelSquaremRetractPoints(const Scalar* __restrict__ X0, const Scalar* __restrict__ r,
+                                            const Scalar* __restrict__ v, Scalar alpha, int npt,
+                                            Scalar* __restrict__ X_out) {
+  int p = blockIdx.x * blockDim.x + threadIdx.x;
+  if (p >= npt) return;
+  const Scalar* rp = r + 3 * p;
+  const Scalar* vp = v + 3 * p;
+#pragma unroll
+  for (int i = 0; i < 3; ++i) {
+    X_out[3 * p + i] = X0[3 * p + i] + (-2 * alpha * rp[i] + alpha * alpha * vp[i]);
+  }
+}
+
 // ============================================================== host orchestration
 struct DeviceProblem {
   int ncam, npt, nobs;
@@ -473,27 +633,40 @@ Scalar ComputeCost(const DeviceProblem& p, const DeviceState& s, Scalar* d_cost)
 }
 
 // One MM step: linearize at `y`, solve, retract into `out`. Returns cost(out).
-Scalar MmStep(const DeviceProblem& p, const DeviceState& y, const DeviceState& out,
-              Scalar* Hc, Scalar* gc, Scalar* Hp, Scalar* gp, Scalar* d_cost,
-              Scalar factor, Scalar lam) {
+// Split into accumulate (build J^T J, J^T r at y -- independent of factor) and
+// solve_retract (apply factor/lam, solve blocks, retract), so a factor can be chosen
+// *after* seeing the gradient at y but *before* solving -- needed by the BB adaptive
+// factor scheme below. Mirrors reference_mm.py's accumulate_grad_hess/solve_retract split.
+void AccumulateGradHess(const DeviceProblem& p, const DeviceState& y, Scalar* Hc, Scalar* gc,
+                         Scalar* Hp, Scalar* gp, Scalar* d_cost_scratch) {
   CUDA_CHECK(cudaMemset(Hc, 0, (size_t)36 * p.ncam * sizeof(Scalar)));
   CUDA_CHECK(cudaMemset(gc, 0, (size_t)6 * p.ncam * sizeof(Scalar)));
   CUDA_CHECK(cudaMemset(Hp, 0, (size_t)9 * p.npt * sizeof(Scalar)));
   CUDA_CHECK(cudaMemset(gp, 0, (size_t)3 * p.npt * sizeof(Scalar)));
   Scalar zero = 0;
-  CUDA_CHECK(cudaMemcpy(d_cost, &zero, sizeof(Scalar), cudaMemcpyHostToDevice));
-
+  CUDA_CHECK(cudaMemcpy(d_cost_scratch, &zero, sizeof(Scalar), cudaMemcpyHostToDevice));
   const int block = 256;
   KernelJacobianAccumulate<<<GridSize(p.nobs, block), block>>>(
       p.cam_idx, p.pt_idx, p.uv, y.R, y.t, y.X, p.f, p.k1, p.k2, p.nobs, Hc, gc, Hp, gp,
-      d_cost);
+      d_cost_scratch);
   CUDA_CHECK(cudaGetLastError());
+}
 
+void SolveRetract(const DeviceProblem& p, const DeviceState& y, const DeviceState& out,
+                   Scalar* Hc, Scalar* gc, Scalar* Hp, Scalar* gp, Scalar factor, Scalar lam) {
+  const int block = 256;
   KernelSolveRetractCameras<<<GridSize(p.ncam, block), block>>>(Hc, gc, y.R, y.t, p.ncam,
                                                                  factor, lam, out.R, out.t);
   KernelSolveRetractPoints<<<GridSize(p.npt, block), block>>>(Hp, gp, y.X, p.npt, factor,
                                                                 lam, out.X);
   CUDA_CHECK(cudaGetLastError());
+}
+
+Scalar MmStep(const DeviceProblem& p, const DeviceState& y, const DeviceState& out,
+              Scalar* Hc, Scalar* gc, Scalar* Hp, Scalar* gp, Scalar* d_cost,
+              Scalar factor, Scalar lam) {
+  AccumulateGradHess(p, y, Hc, gc, Hp, gp, d_cost);
+  SolveRetract(p, y, out, Hc, gc, Hp, gp, factor, lam);
   return ComputeCost(p, out, d_cost);
 }
 
@@ -514,11 +687,91 @@ Scalar GradientRestartDot(const DeviceState& new_state, const DeviceState& curr,
   return dot;
 }
 
+// s.s and s.ydiff for the BB-adaptive factor (see Kernel F above).
+void BBDots(const DeviceState& y, const DeviceState& y_prev, Scalar* gc, Scalar* gc_prev,
+            Scalar* gp, Scalar* gp_prev, int ncam, int npt, Scalar* d_ss, Scalar* d_syd,
+            Scalar* ss_out, Scalar* syd_out) {
+  Scalar zero = 0;
+  CUDA_CHECK(cudaMemcpy(d_ss, &zero, sizeof(Scalar), cudaMemcpyHostToDevice));
+  CUDA_CHECK(cudaMemcpy(d_syd, &zero, sizeof(Scalar), cudaMemcpyHostToDevice));
+  const int block = 256;
+  KernelBBDotsCameras<<<GridSize(ncam, block), block>>>(y.R, y_prev.R, y.t, y_prev.t, gc,
+                                                         gc_prev, ncam, d_ss, d_syd);
+  KernelBBDotsPoints<<<GridSize(npt, block), block>>>(y.X, y_prev.X, gp, gp_prev, npt, d_ss,
+                                                       d_syd);
+  CUDA_CHECK(cudaGetLastError());
+  CUDA_CHECK(cudaMemcpy(ss_out, d_ss, sizeof(Scalar), cudaMemcpyDeviceToHost));
+  CUDA_CHECK(cudaMemcpy(syd_out, d_syd, sizeof(Scalar), cudaMemcpyDeviceToHost));
+}
+
+// Our own adaptation of the Barzilai-Borwein secant principle to this code's `factor`
+// knob -- see reference_mm.py's bb_factor_from_dots for the full derivation/caveats
+// (mirrored exactly here). tau<1 exponentially smooths the clamped target instead of
+// jumping straight to it; tau=1 is the raw/noisy textbook form.
+Scalar BBFactor(Scalar s_dot_s, Scalar s_dot_yd, Scalar base_factor, Scalar prev_factor,
+                 Scalar tau, Scalar min_mult = (Scalar)0.5, Scalar max_mult = (Scalar)25.0) {
+  if (s_dot_s < (Scalar)1e-30) return prev_factor;
+  Scalar raw = s_dot_yd / s_dot_s;
+  if (!std::isfinite(raw) || raw <= 0) return prev_factor;
+  Scalar target = std::max(min_mult * base_factor, std::min(max_mult * base_factor, raw));
+  return (1 - tau) * prev_factor + tau * target;
+}
+
+// One SQUAREM meta-iteration (S3 scheme). Two-way safeguard matching the textbook
+// design and this file's own Nesterov-restart branch (which also accepts whatever
+// mm_step(curr) produces without comparing against the pre-restart cost) -- not a
+// stricter standard than the baseline. Writes the accepted state into `out`, returns
+// its cost, and reports via `accepted_extrapolation` whether the SQUAREM point beat
+// the plain double-step (see reference_mm.py's solve_squarem for the strict_monotone
+// diagnostic variant that isn't ported here -- numpy-only, its purpose was chasing
+// down an anomaly, not something meant to ship).
+Scalar SquaremStep(const DeviceProblem& p, const DeviceState& X0, const DeviceState& out,
+                    Scalar* Hc, Scalar* gc, Scalar* Hp, Scalar* gp, Scalar* d_cost,
+                    Scalar base_factor, Scalar lam, DeviceState& X1, DeviceState& X2,
+                    DeviceState& Xsq, Scalar* r_cam, Scalar* v_cam, Scalar* r_pt, Scalar* v_pt,
+                    Scalar* d_rnorm2, Scalar* d_vnorm2, bool* accepted_extrapolation) {
+  MmStep(p, X0, X1, Hc, gc, Hp, gp, d_cost, base_factor, lam);
+  Scalar cost2 = MmStep(p, X1, X2, Hc, gc, Hp, gp, d_cost, base_factor, lam);
+
+  Scalar zero = 0;
+  CUDA_CHECK(cudaMemcpy(d_rnorm2, &zero, sizeof(Scalar), cudaMemcpyHostToDevice));
+  CUDA_CHECK(cudaMemcpy(d_vnorm2, &zero, sizeof(Scalar), cudaMemcpyHostToDevice));
+  const int block = 256;
+  KernelSquaremRVCameras<<<GridSize(p.ncam, block), block>>>(
+      X0.R, X1.R, X2.R, X0.t, X1.t, X2.t, p.ncam, r_cam, v_cam, d_rnorm2, d_vnorm2);
+  KernelSquaremRVPoints<<<GridSize(p.npt, block), block>>>(X0.X, X1.X, X2.X, p.npt, r_pt, v_pt,
+                                                            d_rnorm2, d_vnorm2);
+  CUDA_CHECK(cudaGetLastError());
+  Scalar rnorm2, vnorm2;
+  CUDA_CHECK(cudaMemcpy(&rnorm2, d_rnorm2, sizeof(Scalar), cudaMemcpyDeviceToHost));
+  CUDA_CHECK(cudaMemcpy(&vnorm2, d_vnorm2, sizeof(Scalar), cudaMemcpyDeviceToHost));
+
+  *accepted_extrapolation = false;
+  Scalar v_norm = std::sqrt(vnorm2);
+  if (v_norm >= (Scalar)1e-30) {
+    Scalar alpha = -std::sqrt(rnorm2) / v_norm;
+    KernelSquaremRetractCameras<<<GridSize(p.ncam, block), block>>>(X0.R, X0.t, r_cam, v_cam,
+                                                                     alpha, p.ncam, Xsq.R, Xsq.t);
+    KernelSquaremRetractPoints<<<GridSize(p.npt, block), block>>>(X0.X, r_pt, v_pt, alpha, p.npt,
+                                                                   Xsq.X);
+    CUDA_CHECK(cudaGetLastError());
+    Scalar cost_sq = ComputeCost(p, Xsq, d_cost);
+    if (std::isfinite(cost_sq) && cost_sq <= cost2) {
+      CopyState(out, Xsq, p.ncam, p.npt);
+      *accepted_extrapolation = true;
+      return cost_sq;
+    }
+  }
+  CopyState(out, X2, p.ncam, p.npt);
+  return cost2;
+}
+
 namespace {
 void PrintUsage(const char* prog) {
   std::fprintf(stderr,
                "Usage: %s --dataset <bal.txt> [--iters N] [--accelerated 0|1]\n"
                "  [--factor F] [--lam L] [--eta E] [--restart-scheme function|gradient]\n"
+               "  [--factor-scheme fixed|bb] [--factor-tau T] [--accel-scheme nesterov|squarem]\n"
                "  [--loss l2|huber] [--fp64 0|1]\n"
                "\n"
                "  --dataset      path to a BAL problem file (required)\n"
@@ -549,6 +802,33 @@ void PrintUsage(const char* prog) {
                "                 not transfer to this problem class -- kept as a\n"
                "                 tunable for further experimentation, not the\n"
                "                 default. See CONVERGENCE_LITERATURE.md.\n"
+               "  --factor-scheme  fixed (default) or bb. bb: adaptive majorization\n"
+               "                 factor via a Barzilai-Borwein secant estimate from\n"
+               "                 consecutive extrapolation points (our own adaptation\n"
+               "                 of the BB principle, not one specific paper's exact\n"
+               "                 recipe -- see CONVERGENCE_LITERATURE.md). Measured:\n"
+               "                 never beats fixed factor=2.0 on this repo's real BA\n"
+               "                 problems at any --factor-tau tested; heavy smoothing\n"
+               "                 (low tau) only degenerates back toward the fixed\n"
+               "                 baseline, never past it. Kept opt-in, not default.\n"
+               "  --factor-tau   EMA smoothing for --factor-scheme bb (default 1.0 =\n"
+               "                 raw/unsmoothed secant estimate, noisiest; lower = more\n"
+               "                 smoothing toward the previous factor).\n"
+               "  --accel-scheme  nesterov (default) or squarem. squarem: an entirely\n"
+               "                 separate outer-loop acceleration (Varadhan & Roland\n"
+               "                 2008 S3 scheme) that treats one plain MM step as a\n"
+               "                 fixed-point map and extrapolates from two consecutive\n"
+               "                 applications -- --iters means SQUAREM meta-iterations\n"
+               "                 here (2 mm_step calls each), not Nesterov iterations\n"
+               "                 (1 each); compare at matched mm_step-equivalent count.\n"
+               "                 Uncovered a real finding while building this: even two\n"
+               "                 *plain* mm_step calls (factor=2, no SQUAREM math) can\n"
+               "                 increase cost on this repo's real BA problem -- the\n"
+               "                 fixed majorization factor doesn't universally guarantee\n"
+               "                 descent on real data, only along the trajectory plain\n"
+               "                 MM happens to visit. See CONVERGENCE_LITERATURE.md for\n"
+               "                 the full results and what this implies for the lack of\n"
+               "                 adaptive damping in this file's block solve generally.\n"
                "  --loss         l2 (default) or huber; huber is not implemented\n"
                "                 (optional extension, Section 7) -- passing it\n"
                "                 prints a warning and falls back to l2 rather\n"
@@ -569,6 +849,9 @@ int main(int argc, char** argv) {
   Scalar lam = 1e-6;
   Scalar eta = 1.0;
   std::string restart_scheme = "function";
+  std::string factor_scheme = "fixed";
+  Scalar factor_tau = 1.0;
+  std::string accel_scheme = "nesterov";
   std::string loss = "l2";
   bool fp64 = true;
 
@@ -588,6 +871,9 @@ int main(int argc, char** argv) {
     else if (a == "--lam") lam = std::atof(next().c_str());
     else if (a == "--eta") eta = std::atof(next().c_str());
     else if (a == "--restart-scheme") restart_scheme = next();
+    else if (a == "--factor-scheme") factor_scheme = next();
+    else if (a == "--factor-tau") factor_tau = std::atof(next().c_str());
+    else if (a == "--accel-scheme") accel_scheme = next();
     else if (a == "--loss") loss = next();
     else if (a == "--fp64") fp64 = std::atoi(next().c_str()) != 0;
     else if (a == "-h" || a == "--help") { PrintUsage(argv[0]); return EXIT_SUCCESS; }
@@ -597,6 +883,16 @@ int main(int argc, char** argv) {
   if (restart_scheme != "function" && restart_scheme != "gradient") {
     std::fprintf(stderr, "--restart-scheme must be 'function' or 'gradient', got '%s'\n",
                  restart_scheme.c_str());
+    return EXIT_FAILURE;
+  }
+  if (factor_scheme != "fixed" && factor_scheme != "bb") {
+    std::fprintf(stderr, "--factor-scheme must be 'fixed' or 'bb', got '%s'\n",
+                 factor_scheme.c_str());
+    return EXIT_FAILURE;
+  }
+  if (accel_scheme != "nesterov" && accel_scheme != "squarem") {
+    std::fprintf(stderr, "--accel-scheme must be 'nesterov' or 'squarem', got '%s'\n",
+                 accel_scheme.c_str());
     return EXIT_FAILURE;
   }
   if (loss != "l2") {
@@ -654,18 +950,34 @@ int main(int argc, char** argv) {
   DeviceState prev = AllocState(bal.ncam, bal.npt);
   DeviceState y = AllocState(bal.ncam, bal.npt);
   DeviceState next = AllocState(bal.ncam, bal.npt);
+  DeviceState y_prev = AllocState(bal.ncam, bal.npt);
   CUDA_CHECK(cudaMemcpy(curr.R, R0.data(), 9 * bal.ncam * sizeof(Scalar), cudaMemcpyHostToDevice));
   CUDA_CHECK(cudaMemcpy(curr.t, t0.data(), 3 * bal.ncam * sizeof(Scalar), cudaMemcpyHostToDevice));
   CUDA_CHECK(cudaMemcpy(curr.X, bal.pts.data(), 3 * bal.npt * sizeof(Scalar), cudaMemcpyHostToDevice));
   CopyState(prev, curr, bal.ncam, bal.npt);
 
-  Scalar *Hc, *gc, *Hp, *gp, *d_cost, *d_dot;
+  Scalar *Hc, *gc, *Hp, *gp, *gc_prev, *gp_prev, *d_cost, *d_dot, *d_ss, *d_syd;
   CUDA_CHECK(cudaMalloc(&Hc, (size_t)36 * bal.ncam * sizeof(Scalar)));
   CUDA_CHECK(cudaMalloc(&gc, (size_t)6 * bal.ncam * sizeof(Scalar)));
   CUDA_CHECK(cudaMalloc(&Hp, (size_t)9 * bal.npt * sizeof(Scalar)));
   CUDA_CHECK(cudaMalloc(&gp, (size_t)3 * bal.npt * sizeof(Scalar)));
+  CUDA_CHECK(cudaMalloc(&gc_prev, (size_t)6 * bal.ncam * sizeof(Scalar)));
+  CUDA_CHECK(cudaMalloc(&gp_prev, (size_t)3 * bal.npt * sizeof(Scalar)));
   CUDA_CHECK(cudaMalloc(&d_cost, sizeof(Scalar)));
   CUDA_CHECK(cudaMalloc(&d_dot, sizeof(Scalar)));
+  CUDA_CHECK(cudaMalloc(&d_ss, sizeof(Scalar)));
+  CUDA_CHECK(cudaMalloc(&d_syd, sizeof(Scalar)));
+
+  DeviceState squarem_x1 = AllocState(bal.ncam, bal.npt);
+  DeviceState squarem_x2 = AllocState(bal.ncam, bal.npt);
+  DeviceState squarem_xsq = AllocState(bal.ncam, bal.npt);
+  Scalar *r_cam, *v_cam, *r_pt, *v_pt, *d_rnorm2, *d_vnorm2;
+  CUDA_CHECK(cudaMalloc(&r_cam, (size_t)6 * bal.ncam * sizeof(Scalar)));
+  CUDA_CHECK(cudaMalloc(&v_cam, (size_t)6 * bal.ncam * sizeof(Scalar)));
+  CUDA_CHECK(cudaMalloc(&r_pt, (size_t)3 * bal.npt * sizeof(Scalar)));
+  CUDA_CHECK(cudaMalloc(&v_pt, (size_t)3 * bal.npt * sizeof(Scalar)));
+  CUDA_CHECK(cudaMalloc(&d_rnorm2, sizeof(Scalar)));
+  CUDA_CHECK(cudaMalloc(&d_vnorm2, sizeof(Scalar)));
 
   Scalar cost_curr = ComputeCost(p, curr, d_cost);
   Scalar rmse0 = std::sqrt(cost_curr * 2.0 / bal.nobs);
@@ -684,7 +996,32 @@ int main(int argc, char** argv) {
   // value for it was available from the accessible parts of that paper, and an
   // uncalibrated constant would be worse than omitting it.
   Scalar cost_ema = cost_curr;
+  Scalar cur_factor = factor;  // "factor" from here on is the base/reference value for BB
+  bool have_y_prev = false;
+  CopyState(y_prev, curr, bal.ncam, bal.npt);
   auto t_start = std::chrono::steady_clock::now();
+  if (accel_scheme == "squarem") {
+    int mmstep_count = 0;
+    for (int meta = 1; meta <= n_iter; ++meta) {
+      bool accepted_extrap = false;
+      cost_curr = SquaremStep(p, curr, next, Hc, gc, Hp, gp, d_cost, factor, lam, squarem_x1,
+                               squarem_x2, squarem_xsq, r_cam, v_cam, r_pt, v_pt, d_rnorm2,
+                               d_vnorm2, &accepted_extrap);
+      mmstep_count += 2;
+      CopyState(curr, next, bal.ncam, bal.npt);
+      if (meta % 10 == 0 || meta == n_iter) {
+        std::printf("  meta%4d cost=%.5e mmstep_equiv=%d choice=%s\n", meta, cost_curr,
+                    mmstep_count, accepted_extrap ? "squarem" : "plain2");
+      }
+    }
+    cudaDeviceSynchronize();
+    double wall =
+        std::chrono::duration<double>(std::chrono::steady_clock::now() - t_start).count();
+    std::printf("done: %d meta-iters (%d mm_step-equiv), wall=%.3fs (%.2f ms/mm_step-equiv), "
+                "final cost=%.6e\n",
+                n_iter, mmstep_count, wall, 1000.0 * wall / mmstep_count, cost_curr);
+    return 0;
+  }
   for (int it = 1; it <= n_iter; ++it) {
     if (accelerated) {
       Scalar beta = (q - 1) / (q + 2);
@@ -697,7 +1034,24 @@ int main(int argc, char** argv) {
       CopyState(y, curr, bal.ncam, bal.npt);
     }
 
-    Scalar cost_new = MmStep(p, y, next, Hc, gc, Hp, gp, d_cost, factor, lam);
+    AccumulateGradHess(p, y, Hc, gc, Hp, gp, d_cost);
+
+    if (factor_scheme == "bb" && have_y_prev) {
+      Scalar ss, syd;
+      BBDots(y, y_prev, gc, gc_prev, gp, gp_prev, bal.ncam, bal.npt, d_ss, d_syd, &ss, &syd);
+      cur_factor = BBFactor(ss, syd, factor, cur_factor, factor_tau);
+    } else {
+      cur_factor = factor;
+    }
+    CopyState(y_prev, y, bal.ncam, bal.npt);
+    CUDA_CHECK(cudaMemcpy(gc_prev, gc, (size_t)6 * bal.ncam * sizeof(Scalar),
+                          cudaMemcpyDeviceToDevice));
+    CUDA_CHECK(cudaMemcpy(gp_prev, gp, (size_t)3 * bal.npt * sizeof(Scalar),
+                          cudaMemcpyDeviceToDevice));
+    have_y_prev = true;
+
+    SolveRetract(p, y, next, Hc, gc, Hp, gp, cur_factor, lam);
+    Scalar cost_new = ComputeCost(p, next, d_cost);
 
     bool trigger = false;
     if (accelerated) {
@@ -711,7 +1065,7 @@ int main(int argc, char** argv) {
 
     bool restarted = false;
     if (trigger) {
-      cost_new = MmStep(p, curr, next, Hc, gc, Hp, gp, d_cost, factor, lam);
+      cost_new = MmStep(p, curr, next, Hc, gc, Hp, gp, d_cost, cur_factor, lam);
       q = std::max(q / (Scalar)2, (Scalar)1);
       restarted = true;
     } else {
@@ -727,8 +1081,8 @@ int main(int argc, char** argv) {
     cost_ema = (1 - eta) * cost_ema + eta * cost_curr;
 
     if (it % 10 == 0 || it == n_iter) {
-      std::printf("  it%4d cost=%.5e ema=%.5e q=%.3f restart=%d\n", it, cost_curr, cost_ema, q,
-                  restarted);
+      std::printf("  it%4d cost=%.5e ema=%.5e q=%.3f factor=%.3f restart=%d\n", it, cost_curr,
+                  cost_ema, q, cur_factor, restarted);
     }
   }
   cudaDeviceSynchronize();
