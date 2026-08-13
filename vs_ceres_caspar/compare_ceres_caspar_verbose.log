@@ -1,0 +1,304 @@
+WARNING: Logging before InitGoogleLogging() is written to STDERR
+I20260812 09:53:12.582719 217846 bundle_adjustment_ceres.cc:603] Creating Ceres bundle adjuster
+loaded /workspace/vidmap_work/multishift-bundle-adjustment/colmap_run/sparse/1: 62 images, 18044 points3D
+converged (source) mean reproj err: 0.9646px
+perturbed (trans_stddev=0.050m rot_stddev=2.00deg point_stddev=0.050m) mean reproj err: 66.6682px
+wrote perturbed starting reconstruction to /tmp/claude-0/-workspace-colmap/acfd7157-a199-49c2-ad6e-11c8bfe280ee/scratchpad/ba_run/verbose/out/perturbed_input
+wrote BAL export to /tmp/claude-0/-workspace-colmap/acfd7157-a199-49c2-ad6e-11c8bfe280ee/scratchpad/ba_run/verbose/out/perturbed.bal.txt (62 cams, 18044 pts, 73546 obs)
+iter      cost      cost_change  |gradient|   |step|    tr_ratio  tr_radius  ls_iter  iter_time  total_time
+   0  2.486070e+08    0.00e+00    3.20e+08   0.00e+00   0.00e+00  1.00e+04        0    1.85e-02    1.14e-01
+   1  4.518166e+05    2.48e+08    8.35e+06   0.00e+00   9.99e-01  3.00e+04        1    4.70e-01    5.84e-01
+   2  5.490583e+04    3.97e+05    7.16e+04   1.22e+01   1.00e+00  9.00e+04        1    6.00e-01    1.18e+00
+   3  5.473114e+04    1.75e+02    1.18e+03   2.57e+00   1.00e+00  2.70e+05        1    5.93e-01    1.78e+00
+   4  5.472727e+04    3.87e+00    1.26e+03   3.28e+00   9.97e-01  8.10e+05        1    6.08e-01    2.39e+00
+   5  5.472688e+04    3.90e-01    3.90e+02   2.21e+00   1.00e+00  2.43e+06        1    5.91e-01    2.98e+00
+   6  5.472687e+04    1.19e-02    1.09e+01   4.62e-01   1.01e+00  7.29e+06        1    5.94e-01    3.57e+00
+   7  5.472687e+04    5.59e-05    1.37e+00   3.48e-02   1.03e+00  2.19e+07        1    6.05e-01    4.18e+00
+   8  5.472687e+04    1.41e-07    1.22e-01   1.61e-03   1.04e+00  6.56e+07        1    6.07e-01    4.78e+00
+   9  5.472687e+04    3.42e-10    7.14e-03   7.57e-05   1.11e+00  1.97e+08        1    6.35e-01    5.42e+00
+  10  5.472687e+04   -5.82e-11    7.14e-03   3.30e-06  -5.43e+01  9.84e+07        1    5.45e-01    5.96e+00
+  11  5.472687e+04   -5.82e-11    7.14e-03   3.30e-06  -5.43e+01  2.46e+07        1    5.90e-01    6.55e+00
+  12  5.472687e+04    7.28e-12    3.57e-04   3.29e-06   4.35e+01  7.38e+07        1    5.96e-01    7.15e+00
+  13  5.472687e+04   -5.82e-11    3.57e-04   1.75e-07  -5.07e+04  3.69e+07        1    6.09e-01    7.76e+00
+  14  5.472687e+04   -1.38e-10    3.57e-04   1.74e-07  -1.01e+05  9.23e+06        1    5.22e-01    8.28e+00
+  15  5.472687e+04   -4.37e-11    3.57e-04   1.72e-07  -4.15e+04  1.15e+06        1    6.07e-01    8.89e+00
+  16  5.472687e+04   -3.64e-11    3.57e-04   1.55e-07  -3.71e+04  7.21e+04        1    5.87e-01    9.47e+00
+  17  5.472687e+04   -5.82e-11    3.57e-04   5.65e-08  -6.48e+04  2.25e+03        1    5.99e-01    1.01e+01
+  18  5.472687e+04    5.82e-11    1.64e-05   4.52e-09   4.70e+04  6.76e+03        1    6.38e-01    1.07e+01
+I20260812 09:53:23.356276 217846 bundle_adjustment_ceres.cc:1097] 
+Solver Summary (v 2.3.0-eigen-(3.4.0)-lapack-metis-(5.1.0)-eigensparse-cuda-(12080)-cudss-(0.8.0))
+
+                                     Original                  Reduced
+Parameter blocks                        18107                    18107
+Parameters                              54570                    54570
+Effective parameters                    54506                    54506
+Residual blocks                         73546                    73546
+Residuals                              147092                   147092
+
+Minimizer                        TRUST_REGION
+Trust region strategy     LEVENBERG_MARQUARDT
+Sparse linear algebra library    EIGEN_SPARSE + AMD 
+
+                                        Given                     Used
+Linear solver                    SPARSE_SCHUR             SPARSE_SCHUR
+Threads                                    64                       64
+Linear solver ordering              AUTOMATIC                 18044,63
+Schur structure                         2,3,d                    2,3,d
+
+Cost:
+Initial                          2.486070e+08
+Final                            5.472687e+04
+Change                           2.485523e+08
+
+Minimizer iterations                       19
+Successful steps                           12
+Unsuccessful steps                          7
+
+Time (in seconds):
+Preprocessor                         0.094989
+
+  Residual only evaluation           0.044760 (18)
+  Jacobian & residual evaluation     0.177210 (12)
+  Linear solver                     10.215729 (18)
+Minimizer                           10.618483
+
+Postprocessor                        0.003425
+Total                               10.716908
+
+Termination:                      CONVERGENCE (Gradient tolerance reached. Gradient max norm: 1.637452e-05 <= 1.000000e-04)
+I20260812 09:53:23.356757 217846 bundle_adjustment_ceres.cc:1128] Bundle adjustment report
+    Residuals : 147092
+   Parameters : 54506
+   Iterations : 19
+         Time : 10.7169 [s]
+ Initial cost : 41.1114 [px]
+   Final cost : 0.609966 [px]
+  Termination : CONVERGENCE
+
+I20260812 09:53:23.480640 217846 bundle_adjustment_caspar.cc:24] Creating Caspar bundle adjuster
+I20260812 09:53:23.627318 217846 cuda.cc:72] Found 1 CUDA device(s), selected device 0 with name NVIDIA RTX 2000 Ada Generation
+I20260812 09:53:23.627362 217846 bundle_adjustment_caspar.cc:843] === Caspar factor distribution ===
+I20260812 09:53:23.627365 217846 bundle_adjustment_caspar.cc:844]   Points: 18044  Frames: 62
+I20260812 09:53:23.627370 217846 bundle_adjustment_caspar.cc:850]   model=2 variant=FIXED_PP factors=73546
+I20260812 09:53:23.627374 217846 bundle_adjustment_caspar.cc:855]   Gauge-fixed frames: 0  Gauge-fixed points: 0
+I20260812 09:53:23.627378 217846 bundle_adjustment_caspar.cc:857]   refine_focal_length=1 refine_extra_params=1 refine_pp=0 refine_pose=1
+I20260812 09:53:23.764462 217846 bundle_adjustment_caspar.cc:599] === CASPAR SOLVER SETUP ===
+I20260812 09:53:23.764503 217846 bundle_adjustment_caspar.cc:600]   Points: 18044
+I20260812 09:53:23.769176 217846 bundle_adjustment_caspar.cc:613]   Poses (2): 62
+
+== CERES ==
+  usable solution: yes
+  num residuals:   147092
+  mean reproj err: 66.6682px -> 0.9646px
+  cheirality violations: 0 -> 0 (of 18044 points3D)
+  wall-clock:       10.730s
+                                 score_init:  2.486068e+08
+solver_iter:   0  pcg_iter:   4  score_current:  3.888944e+07  score_best:  3.888944e+07  step_quality:   0.997  diag:  1.000e+00  dt_inc:   0.019737  dt_tot:   0.019737  
+solver_iter:   1  pcg_iter:   7  score_current:  4.137993e+06  score_best:  4.137993e+06  step_quality:   1.003  diag:  3.333e-01  dt_inc:   0.002124  dt_tot:   0.021861  
+solver_iter:   2  pcg_iter:  19  score_current:  7.957369e+05  score_best:  7.957369e+05  step_quality:   1.003  diag:  1.111e-01  dt_inc:   0.004122  dt_tot:   0.025983  
+solver_iter:   3  pcg_iter:  19  score_current:  2.358041e+05  score_best:  2.358041e+05  step_quality:   1.011  diag:  3.704e-02  dt_inc:   0.004147  dt_tot:   0.030130  
+solver_iter:   4  pcg_iter:  19  score_current:  1.039999e+05  score_best:  1.039999e+05  step_quality:   1.027  diag:  1.235e-02  dt_inc:   0.004133  dt_tot:   0.034263  
+solver_iter:   5  pcg_iter:  19  score_current:  7.121941e+04  score_best:  7.121941e+04  step_quality:   1.057  diag:  4.115e-03  dt_inc:   0.004140  dt_tot:   0.038403  
+solver_iter:   6  pcg_iter:  19  score_current:  6.350285e+04  score_best:  6.350285e+04  step_quality:   1.157  diag:  1.372e-03  dt_inc:   0.004160  dt_tot:   0.042563  
+solver_iter:   7  pcg_iter:  19  score_current:  6.066784e+04  score_best:  6.066784e+04  step_quality:   1.398  diag:  4.572e-04  dt_inc:   0.004140  dt_tot:   0.046704  
+solver_iter:   8  pcg_iter:  19  score_current:  5.926345e+04  score_best:  5.926345e+04  step_quality:   1.062  diag:  1.524e-04  dt_inc:   0.004148  dt_tot:   0.050852  
+solver_iter:   9  pcg_iter:  19  score_current:  5.854203e+04  score_best:  5.854203e+04  step_quality:   1.296  diag:  5.080e-05  dt_inc:   0.004145  dt_tot:   0.054996  
+solver_iter:  10  pcg_iter:  19  score_current:  5.741862e+04  score_best:  5.741862e+04  step_quality:   0.936  diag:  1.693e-05  dt_inc:   0.004150  dt_tot:   0.059146  
+solver_iter:  11  pcg_iter:  19  score_current:  5.694009e+04  score_best:  5.694009e+04  step_quality:   1.253  diag:  5.728e-06  dt_inc:   0.004151  dt_tot:   0.063297  
+solver_iter:  12  pcg_iter:  19  score_current:  5.669213e+04  score_best:  5.669213e+04  step_quality:   0.934  diag:  1.909e-06  dt_inc:   0.004132  dt_tot:   0.067429  
+solver_iter:  13  pcg_iter:  19  score_current:  5.647495e+04  score_best:  5.647495e+04  step_quality:   1.379  diag:  6.572e-07  dt_inc:   0.004140  dt_tot:   0.071569  
+solver_iter:  14  pcg_iter:  19  score_current:  5.604227e+04  score_best:  5.604227e+04  step_quality:   1.045  diag:  2.191e-07  dt_inc:   0.004139  dt_tot:   0.075708  
+solver_iter:  15  pcg_iter:  19  score_current:  5.581765e+04  score_best:  5.581765e+04  step_quality:   1.278  diag:  7.302e-08  dt_inc:   0.004140  dt_tot:   0.079848  
+solver_iter:  16  pcg_iter:  19  score_current:  5.574557e+04  score_best:  5.574557e+04  step_quality:   0.943  diag:  2.434e-08  dt_inc:   0.004147  dt_tot:   0.083995  
+solver_iter:  17  pcg_iter:  19  score_current:  5.566500e+04  score_best:  5.566500e+04  step_quality:   1.463  diag:  8.114e-09  dt_inc:   0.004149  dt_tot:   0.088143  
+solver_iter:  18  pcg_iter:  19  score_current:           nan  score_best:  5.566500e+04  step_quality:   0.000  diag:  2.705e-09  dt_inc:   0.004023  dt_tot:   0.092166  
+solver_iter:  19  pcg_iter:  19  score_current:           nan  score_best:  5.566500e+04  step_quality:   0.000  diag:  5.409e-09  dt_inc:   0.004016  dt_tot:   0.096182  
+solver_iter:  20  pcg_iter:  19  score_current:           nan  score_best:  5.566500e+04  step_quality:   0.000  diag:  2.164e-08  dt_inc:   0.004015  dt_tot:   0.100197  
+solver_iter:  21  pcg_iter:  19  score_current:           nan  score_best:  5.566500e+04  step_quality:   0.000  diag:  1.731e-07  dt_inc:   0.004023  dt_tot:   0.104220  
+solver_iter:  22  pcg_iter:  19  score_current:           nan  score_best:  5.566500e+04  step_quality:   0.000  diag:  2.769e-06  dt_inc:   0.004031  dt_tot:   0.108251  
+solver_iter:  23  pcg_iter:  19  score_current:           nan  score_best:  5.566500e+04  step_quality:   0.000  diag:  8.862e-05  dt_inc:   0.004099  dt_tot:   0.112350  
+solver_iter:  24  pcg_iter:  19  score_current:  5.555100e+04  score_best:  5.555100e+04  step_quality:   1.024  diag:  5.672e-03  dt_inc:   0.004146  dt_tot:   0.116496  
+solver_iter:  25  pcg_iter:  19  score_current:  5.552380e+04  score_best:  5.552380e+04  step_quality:   1.556  diag:  1.891e-03  dt_inc:   0.004141  dt_tot:   0.120637  
+solver_iter:  26  pcg_iter:  19  score_current:           nan  score_best:  5.552380e+04  step_quality:   0.000  diag:  6.302e-04  dt_inc:   0.004095  dt_tot:   0.124732  
+solver_iter:  27  pcg_iter:  19  score_current:           nan  score_best:  5.552380e+04  step_quality:   0.000  diag:  1.260e-03  dt_inc:   0.004060  dt_tot:   0.128792  
+solver_iter:  28  pcg_iter:  19  score_current:           nan  score_best:  5.552380e+04  step_quality:   0.000  diag:  5.042e-03  dt_inc:   0.004059  dt_tot:   0.132851  
+solver_iter:  29  pcg_iter:  19  score_current:  5.549867e+04  score_best:  5.549867e+04  step_quality:   0.966  diag:  4.033e-02  dt_inc:   0.004141  dt_tot:   0.136992  
+solver_iter:  30  pcg_iter:  19  score_current:           nan  score_best:  5.549867e+04  step_quality:   0.000  diag:  1.344e-02  dt_inc:   0.004107  dt_tot:   0.141098  
+solver_iter:  31  pcg_iter:  19  score_current:  5.547756e+04  score_best:  5.547756e+04  step_quality:   0.862  diag:  2.689e-02  dt_inc:   0.004139  dt_tot:   0.145237  
+solver_iter:  32  pcg_iter:  19  score_current:  5.546232e+04  score_best:  5.546232e+04  step_quality:   1.388  diag:  1.672e-02  dt_inc:   0.004144  dt_tot:   0.149381  
+solver_iter:  33  pcg_iter:  19  score_current:  5.538795e+04  score_best:  5.538795e+04  step_quality:   0.879  diag:  5.573e-03  dt_inc:   0.004136  dt_tot:   0.153517  
+solver_iter:  34  pcg_iter:  19  score_current:  5.536380e+04  score_best:  5.536380e+04  step_quality:   1.261  diag:  3.153e-03  dt_inc:   0.004134  dt_tot:   0.157650  
+solver_iter:  35  pcg_iter:  19  score_current:  5.534838e+04  score_best:  5.534838e+04  step_quality:   1.387  diag:  1.051e-03  dt_inc:   0.004143  dt_tot:   0.161794  
+solver_iter:  36  pcg_iter:  19  score_current:  5.533042e+04  score_best:  5.533042e+04  step_quality:   1.469  diag:  3.503e-04  dt_inc:   0.004138  dt_tot:   0.165932  
+solver_iter:  37  pcg_iter:  19  score_current:           nan  score_best:  5.533042e+04  step_quality:   0.000  diag:  1.168e-04  dt_inc:   0.004018  dt_tot:   0.169949  
+solver_iter:  38  pcg_iter:  19  score_current:           nan  score_best:  5.533042e+04  step_quality:   0.000  diag:  2.336e-04  dt_inc:   0.004015  dt_tot:   0.173964  
+solver_iter:  39  pcg_iter:  19  score_current:           nan  score_best:  5.533042e+04  step_quality:   0.000  diag:  9.343e-04  dt_inc:   0.004011  dt_tot:   0.177975  
+solver_iter:  40  pcg_iter:  19  score_current:           nan  score_best:  5.533042e+04  step_quality:   0.000  diag:  7.474e-03  dt_inc:   0.004123  dt_tot:   0.182098  
+solver_iter:  41  pcg_iter:  19  score_current:  5.532412e+04  score_best:  5.532412e+04  step_quality:   1.003  diag:  1.196e-01  dt_inc:   0.004143  dt_tot:   0.186241  
+solver_iter:  42  pcg_iter:  19  score_current:  5.531522e+04  score_best:  5.531522e+04  step_quality:   0.858  diag:  3.986e-02  dt_inc:   0.004163  dt_tot:   0.190404  
+solver_iter:  43  pcg_iter:  19  score_current:  5.530453e+04  score_best:  5.530453e+04  step_quality:   1.404  diag:  2.527e-02  dt_inc:   0.004149  dt_tot:   0.194553  
+solver_iter:  44  pcg_iter:  19  score_current:           nan  score_best:  5.530453e+04  step_quality:   0.000  diag:  8.424e-03  dt_inc:   0.004104  dt_tot:   0.198657  
+solver_iter:  45  pcg_iter:  19  score_current:  5.527811e+04  score_best:  5.527811e+04  step_quality:   0.862  diag:  1.685e-02  dt_inc:   0.004154  dt_tot:   0.202810  
+solver_iter:  46  pcg_iter:  19  score_current:  5.526619e+04  score_best:  5.526619e+04  step_quality:   1.506  diag:  1.046e-02  dt_inc:   0.004145  dt_tot:   0.206955  
+solver_iter:  47  pcg_iter:  19  score_current:           nan  score_best:  5.526619e+04  step_quality:   0.000  diag:  3.486e-03  dt_inc:   0.004112  dt_tot:   0.211067  
+solver_iter:  48  pcg_iter:  19  score_current:           nan  score_best:  5.526619e+04  step_quality:   0.000  diag:  6.972e-03  dt_inc:   0.004085  dt_tot:   0.215152  
+solver_iter:  49  pcg_iter:  19  score_current:  5.525040e+04  score_best:  5.525040e+04  step_quality:   0.957  diag:  2.789e-02  dt_inc:   0.004141  dt_tot:   0.219292  
+solver_iter:  50  pcg_iter:  19  score_current:  5.523959e+04  score_best:  5.523959e+04  step_quality:   1.475  diag:  9.295e-03  dt_inc:   0.004136  dt_tot:   0.223429  
+solver_iter:  51  pcg_iter:  19  score_current:  5.520181e+04  score_best:  5.520181e+04  step_quality:   1.044  diag:  3.098e-03  dt_inc:   0.004141  dt_tot:   0.227569  
+solver_iter:  52  pcg_iter:  19  score_current:  5.518270e+04  score_best:  5.518270e+04  step_quality:   1.261  diag:  1.033e-03  dt_inc:   0.004142  dt_tot:   0.231712  
+solver_iter:  53  pcg_iter:  19  score_current:  5.517205e+04  score_best:  5.517205e+04  step_quality:   1.143  diag:  3.443e-04  dt_inc:   0.004134  dt_tot:   0.235845  
+solver_iter:  54  pcg_iter:  19  score_current:  5.515912e+04  score_best:  5.515912e+04  step_quality:   1.432  diag:  1.148e-04  dt_inc:   0.004136  dt_tot:   0.239981  
+solver_iter:  55  pcg_iter:  19  score_current:           nan  score_best:  5.515912e+04  step_quality:   0.000  diag:  3.825e-05  dt_inc:   0.004002  dt_tot:   0.243984  
+solver_iter:  56  pcg_iter:  19  score_current:           nan  score_best:  5.515912e+04  step_quality:   0.000  diag:  7.650e-05  dt_inc:   0.004001  dt_tot:   0.247984  
+solver_iter:  57  pcg_iter:  19  score_current:           nan  score_best:  5.515912e+04  step_quality:   0.000  diag:  3.060e-04  dt_inc:   0.004015  dt_tot:   0.251999  
+solver_iter:  58  pcg_iter:  19  score_current:           nan  score_best:  5.515912e+04  step_quality:   0.000  diag:  2.448e-03  dt_inc:   0.004047  dt_tot:   0.256046  
+solver_iter:  59  pcg_iter:  19  score_current:  5.514661e+04  score_best:  5.514661e+04  step_quality:   0.992  diag:  3.917e-02  dt_inc:   0.004135  dt_tot:   0.260182  
+solver_iter:  60  pcg_iter:  19  score_current:           nan  score_best:  5.514661e+04  step_quality:   0.000  diag:  1.306e-02  dt_inc:   0.004115  dt_tot:   0.264296  
+solver_iter:  61  pcg_iter:  19  score_current:  5.513838e+04  score_best:  5.513838e+04  step_quality:   0.826  diag:  2.611e-02  dt_inc:   0.004139  dt_tot:   0.268435  
+solver_iter:  62  pcg_iter:  19  score_current:  5.513060e+04  score_best:  5.513060e+04  step_quality:   1.384  diag:  1.890e-02  dt_inc:   0.003931  dt_tot:   0.272367  
+solver_iter:  63  pcg_iter:  19  score_current:           nan  score_best:  5.513060e+04  step_quality:   0.000  diag:  6.302e-03  dt_inc:   0.003531  dt_tot:   0.275897  
+solver_iter:  64  pcg_iter:  19  score_current:           nan  score_best:  5.513060e+04  step_quality:   0.000  diag:  1.260e-02  dt_inc:   0.003601  dt_tot:   0.279498  
+solver_iter:  65  pcg_iter:  19  score_current:  5.512136e+04  score_best:  5.512136e+04  step_quality:   0.957  diag:  5.041e-02  dt_inc:   0.003626  dt_tot:   0.283124  
+solver_iter:  66  pcg_iter:  19  score_current:  5.511037e+04  score_best:  5.511037e+04  step_quality:   0.845  diag:  1.680e-02  dt_inc:   0.003618  dt_tot:   0.286743  
+solver_iter:  67  pcg_iter:  19  score_current:  5.510202e+04  score_best:  5.510202e+04  step_quality:   1.359  diag:  1.126e-02  dt_inc:   0.003618  dt_tot:   0.290361  
+solver_iter:  68  pcg_iter:  19  score_current:           nan  score_best:  5.510202e+04  step_quality:   0.000  diag:  3.755e-03  dt_inc:   0.003599  dt_tot:   0.293959  
+solver_iter:  69  pcg_iter:  19  score_current:           nan  score_best:  5.510202e+04  step_quality:   0.000  diag:  7.510e-03  dt_inc:   0.003579  dt_tot:   0.297538  
+solver_iter:  70  pcg_iter:  19  score_current:  5.508964e+04  score_best:  5.508964e+04  step_quality:   0.857  diag:  3.004e-02  dt_inc:   0.003612  dt_tot:   0.301150  
+solver_iter:  71  pcg_iter:  19  score_current:  5.508299e+04  score_best:  5.508299e+04  step_quality:   1.404  diag:  1.913e-02  dt_inc:   0.003639  dt_tot:   0.304790  
+solver_iter:  72  pcg_iter:  19  score_current:  5.505825e+04  score_best:  5.505825e+04  step_quality:   0.908  diag:  6.377e-03  dt_inc:   0.003608  dt_tot:   0.308397  
+solver_iter:  73  pcg_iter:  19  score_current:  5.504795e+04  score_best:  5.504795e+04  step_quality:   1.299  diag:  2.922e-03  dt_inc:   0.003610  dt_tot:   0.312008  
+solver_iter:  74  pcg_iter:  19  score_current:  5.504104e+04  score_best:  5.504104e+04  step_quality:   1.079  diag:  9.742e-04  dt_inc:   0.003612  dt_tot:   0.315619  
+solver_iter:  75  pcg_iter:  19  score_current:  5.503172e+04  score_best:  5.503172e+04  step_quality:   1.357  diag:  3.247e-04  dt_inc:   0.003597  dt_tot:   0.319217  
+solver_iter:  76  pcg_iter:  19  score_current:           nan  score_best:  5.503172e+04  step_quality:   0.000  diag:  1.082e-04  dt_inc:   0.003480  dt_tot:   0.322697  
+solver_iter:  77  pcg_iter:  19  score_current:           nan  score_best:  5.503172e+04  step_quality:   0.000  diag:  2.165e-04  dt_inc:   0.003477  dt_tot:   0.326174  
+solver_iter:  78  pcg_iter:  19  score_current:           nan  score_best:  5.503172e+04  step_quality:   0.000  diag:  8.659e-04  dt_inc:   0.003475  dt_tot:   0.329649  
+solver_iter:  79  pcg_iter:  19  score_current:           nan  score_best:  5.503172e+04  step_quality:   0.000  diag:  6.927e-03  dt_inc:   0.003561  dt_tot:   0.333211  
+solver_iter:  80  pcg_iter:  19  score_current:  5.502859e+04  score_best:  5.502859e+04  step_quality:   1.017  diag:  1.108e-01  dt_inc:   0.003592  dt_tot:   0.336802  
+solver_iter:  81  pcg_iter:  19  score_current:  5.502312e+04  score_best:  5.502312e+04  step_quality:   0.843  diag:  3.695e-02  dt_inc:   0.003591  dt_tot:   0.340394  
+solver_iter:  82  pcg_iter:  19  score_current:  5.501786e+04  score_best:  5.501786e+04  step_quality:   1.333  diag:  2.497e-02  dt_inc:   0.003600  dt_tot:   0.343994  
+solver_iter:  83  pcg_iter:  19  score_current:           nan  score_best:  5.501786e+04  step_quality:   0.000  diag:  8.325e-03  dt_inc:   0.003565  dt_tot:   0.347559  
+solver_iter:  84  pcg_iter:  19  score_current:  5.500877e+04  score_best:  5.500877e+04  step_quality:   0.840  diag:  1.665e-02  dt_inc:   0.003598  dt_tot:   0.351157  
+solver_iter:  85  pcg_iter:  19  score_current:  5.500360e+04  score_best:  5.500360e+04  step_quality:   1.521  diag:  1.141e-02  dt_inc:   0.003614  dt_tot:   0.354771  
+solver_iter:  86  pcg_iter:  19  score_current:           nan  score_best:  5.500360e+04  step_quality:   0.000  diag:  3.805e-03  dt_inc:   0.003516  dt_tot:   0.358286  
+solver_iter:  87  pcg_iter:  19  score_current:           nan  score_best:  5.500360e+04  step_quality:   0.000  diag:  7.609e-03  dt_inc:   0.003557  dt_tot:   0.361843  
+solver_iter:  88  pcg_iter:  19  score_current:  5.499566e+04  score_best:  5.499566e+04  step_quality:   0.929  diag:  3.044e-02  dt_inc:   0.003587  dt_tot:   0.365431  
+solver_iter:  89  pcg_iter:  19  score_current:  5.499084e+04  score_best:  5.499084e+04  step_quality:   1.464  diag:  1.118e-02  dt_inc:   0.003598  dt_tot:   0.369028  
+solver_iter:  90  pcg_iter:  19  score_current:  5.497251e+04  score_best:  5.497251e+04  step_quality:   1.015  diag:  3.728e-03  dt_inc:   0.003604  dt_tot:   0.372633  
+solver_iter:  91  pcg_iter:  19  score_current:  5.496392e+04  score_best:  5.496392e+04  step_quality:   1.237  diag:  1.243e-03  dt_inc:   0.003614  dt_tot:   0.376247  
+solver_iter:  92  pcg_iter:  19  score_current:  5.495480e+04  score_best:  5.495480e+04  step_quality:   1.004  diag:  4.142e-04  dt_inc:   0.003625  dt_tot:   0.379872  
+solver_iter:  93  pcg_iter:  19  score_current:  5.494727e+04  score_best:  5.494727e+04  step_quality:   1.301  diag:  1.381e-04  dt_inc:   0.003597  dt_tot:   0.383469  
+solver_iter:  94  pcg_iter:  19  score_current:           nan  score_best:  5.494727e+04  step_quality:   0.000  diag:  4.602e-05  dt_inc:   0.003546  dt_tot:   0.387015  
+solver_iter:  95  pcg_iter:  19  score_current:           nan  score_best:  5.494727e+04  step_quality:   0.000  diag:  9.204e-05  dt_inc:   0.003509  dt_tot:   0.390525  
+solver_iter:  96  pcg_iter:  19  score_current:           nan  score_best:  5.494727e+04  step_quality:   0.000  diag:  3.682e-04  dt_inc:   0.003488  dt_tot:   0.394012  
+solver_iter:  97  pcg_iter:  19  score_current:           nan  score_best:  5.494727e+04  step_quality:   0.000  diag:  2.945e-03  dt_inc:   0.003536  dt_tot:   0.397548  
+solver_iter:  98  pcg_iter:  19  score_current:  5.494238e+04  score_best:  5.494238e+04  step_quality:   0.970  diag:  4.712e-02  dt_inc:   0.003608  dt_tot:   0.401156  
+solver_iter:  99  pcg_iter:  19  score_current:  5.493834e+04  score_best:  5.493834e+04  step_quality:   0.814  diag:  1.571e-02  dt_inc:   0.003594  dt_tot:   0.404750  
+solver_iter:  100  pcg_iter:  19  score_current:  5.493427e+04  score_best:  5.493427e+04  step_quality:   1.369  diag:  1.181e-02  dt_inc:   0.003596  dt_tot:   0.408346  
+solver_iter:  101  pcg_iter:  19  score_current:           nan  score_best:  5.493427e+04  step_quality:   0.000  diag:  3.938e-03  dt_inc:   0.003515  dt_tot:   0.411861  
+solver_iter:  102  pcg_iter:  19  score_current:           nan  score_best:  5.493427e+04  step_quality:   0.000  diag:  7.875e-03  dt_inc:   0.003546  dt_tot:   0.415407  
+solver_iter:  103  pcg_iter:  19  score_current:  5.492932e+04  score_best:  5.492932e+04  step_quality:   0.926  diag:  3.150e-02  dt_inc:   0.003602  dt_tot:   0.419009  
+solver_iter:  104  pcg_iter:  19  score_current:  5.492594e+04  score_best:  5.492594e+04  step_quality:   1.455  diag:  1.205e-02  dt_inc:   0.003593  dt_tot:   0.422602  
+solver_iter:  105  pcg_iter:  19  score_current:  5.491305e+04  score_best:  5.491305e+04  step_quality:   0.967  diag:  4.015e-03  dt_inc:   0.003599  dt_tot:   0.426202  
+solver_iter:  106  pcg_iter:  19  score_current:  5.490646e+04  score_best:  5.490646e+04  step_quality:   1.240  diag:  1.338e-03  dt_inc:   0.003600  dt_tot:   0.429802  
+solver_iter:  107  pcg_iter:  19  score_current:  5.490115e+04  score_best:  5.490115e+04  step_quality:   0.926  diag:  4.462e-04  dt_inc:   0.003610  dt_tot:   0.433412  
+solver_iter:  108  pcg_iter:  19  score_current:  5.489618e+04  score_best:  5.489618e+04  step_quality:   1.337  diag:  1.710e-04  dt_inc:   0.003601  dt_tot:   0.437013  
+solver_iter:  109  pcg_iter:  19  score_current:           nan  score_best:  5.489618e+04  step_quality:   0.000  diag:  5.700e-05  dt_inc:   0.003487  dt_tot:   0.440501  
+solver_iter:  110  pcg_iter:  19  score_current:           nan  score_best:  5.489618e+04  step_quality:   0.000  diag:  1.140e-04  dt_inc:   0.003486  dt_tot:   0.443987  
+solver_iter:  111  pcg_iter:  19  score_current:           nan  score_best:  5.489618e+04  step_quality:   0.000  diag:  4.560e-04  dt_inc:   0.003499  dt_tot:   0.447486  
+solver_iter:  112  pcg_iter:  19  score_current:           nan  score_best:  5.489618e+04  step_quality:   0.000  diag:  3.648e-03  dt_inc:   0.003559  dt_tot:   0.451044  
+solver_iter:  113  pcg_iter:  19  score_current:  5.489328e+04  score_best:  5.489328e+04  step_quality:   1.007  diag:  5.836e-02  dt_inc:   0.003592  dt_tot:   0.454636  
+solver_iter:  114  pcg_iter:  19  score_current:  5.488910e+04  score_best:  5.488910e+04  step_quality:   0.828  diag:  1.945e-02  dt_inc:   0.003604  dt_tot:   0.458240  
+solver_iter:  115  pcg_iter:  19  score_current:  5.488631e+04  score_best:  5.488631e+04  step_quality:   1.346  diag:  1.394e-02  dt_inc:   0.003598  dt_tot:   0.461838  
+solver_iter:  116  pcg_iter:  19  score_current:           nan  score_best:  5.488631e+04  step_quality:   0.000  diag:  4.647e-03  dt_inc:   0.003549  dt_tot:   0.465386  
+solver_iter:  117  pcg_iter:  19  score_current:           nan  score_best:  5.488631e+04  step_quality:   0.000  diag:  9.294e-03  dt_inc:   0.003564  dt_tot:   0.468951  
+solver_iter:  118  pcg_iter:  19  score_current:  5.488254e+04  score_best:  5.488254e+04  step_quality:   0.875  diag:  3.718e-02  dt_inc:   0.003642  dt_tot:   0.472593  
+solver_iter:  119  pcg_iter:  19  score_current:  5.488007e+04  score_best:  5.488007e+04  step_quality:   1.374  diag:  2.154e-02  dt_inc:   0.003592  dt_tot:   0.476185  
+solver_iter:  120  pcg_iter:  19  score_current:  5.487172e+04  score_best:  5.487172e+04  step_quality:   0.870  diag:  7.180e-03  dt_inc:   0.003596  dt_tot:   0.479781  
+solver_iter:  121  pcg_iter:  19  score_current:  5.486821e+04  score_best:  5.486821e+04  step_quality:   1.289  diag:  4.281e-03  dt_inc:   0.003588  dt_tot:   0.483369  
+solver_iter:  122  pcg_iter:  19  score_current:  5.486580e+04  score_best:  5.486580e+04  step_quality:   1.294  diag:  1.427e-03  dt_inc:   0.003595  dt_tot:   0.486964  
+solver_iter:  123  pcg_iter:  19  score_current:  5.486286e+04  score_best:  5.486286e+04  step_quality:   1.434  diag:  4.757e-04  dt_inc:   0.003599  dt_tot:   0.490564  
+solver_iter:  124  pcg_iter:  19  score_current:           nan  score_best:  5.486286e+04  step_quality:   0.000  diag:  1.586e-04  dt_inc:   0.003534  dt_tot:   0.494098  
+solver_iter:  125  pcg_iter:  19  score_current:           nan  score_best:  5.486286e+04  step_quality:   0.000  diag:  3.171e-04  dt_inc:   0.003507  dt_tot:   0.497605  
+solver_iter:  126  pcg_iter:  19  score_current:           nan  score_best:  5.486286e+04  step_quality:   0.000  diag:  1.268e-03  dt_inc:   0.003504  dt_tot:   0.501109  
+solver_iter:  127  pcg_iter:  19  score_current:  5.485768e+04  score_best:  5.485768e+04  step_quality:   0.954  diag:  1.015e-02  dt_inc:   0.003563  dt_tot:   0.504672  
+solver_iter:  128  pcg_iter:  19  score_current:  5.485529e+04  score_best:  5.485529e+04  step_quality:   1.359  diag:  3.383e-03  dt_inc:   0.003619  dt_tot:   0.508291  
+solver_iter:  129  pcg_iter:  19  score_current:  5.485238e+04  score_best:  5.485238e+04  step_quality:   1.290  diag:  1.128e-03  dt_inc:   0.003599  dt_tot:   0.511890  
+solver_iter:  130  pcg_iter:  19  score_current:  5.484940e+04  score_best:  5.484940e+04  step_quality:   1.327  diag:  3.758e-04  dt_inc:   0.003605  dt_tot:   0.515496  
+solver_iter:  131  pcg_iter:  19  score_current:           nan  score_best:  5.484940e+04  step_quality:   0.000  diag:  1.253e-04  dt_inc:   0.003585  dt_tot:   0.519081  
+solver_iter:  132  pcg_iter:  19  score_current:           nan  score_best:  5.484940e+04  step_quality:   0.000  diag:  2.506e-04  dt_inc:   0.003631  dt_tot:   0.522712  
+solver_iter:  133  pcg_iter:  19  score_current:           nan  score_best:  5.484940e+04  step_quality:   0.000  diag:  1.002e-03  dt_inc:   0.003551  dt_tot:   0.526263  
+solver_iter:  134  pcg_iter:  19  score_current:           nan  score_best:  5.484940e+04  step_quality:   0.000  diag:  8.018e-03  dt_inc:   0.003565  dt_tot:   0.529828  
+solver_iter:  135  pcg_iter:  19  score_current:  5.484847e+04  score_best:  5.484847e+04  step_quality:   1.065  diag:  1.283e-01  dt_inc:   0.003604  dt_tot:   0.533432  
+solver_iter:  136  pcg_iter:  19  score_current:  5.484709e+04  score_best:  5.484709e+04  step_quality:   0.822  diag:  4.276e-02  dt_inc:   0.003591  dt_tot:   0.537023  
+solver_iter:  137  pcg_iter:  19  score_current:  5.484569e+04  score_best:  5.484569e+04  step_quality:   1.363  diag:  3.132e-02  dt_inc:   0.003597  dt_tot:   0.540621  
+solver_iter:  138  pcg_iter:  19  score_current:           nan  score_best:  5.484569e+04  step_quality:   0.000  diag:  1.044e-02  dt_inc:   0.003578  dt_tot:   0.544199  
+solver_iter:  139  pcg_iter:  19  score_current:  5.484277e+04  score_best:  5.484277e+04  step_quality:   0.836  diag:  2.088e-02  dt_inc:   0.003607  dt_tot:   0.547806  
+solver_iter:  140  pcg_iter:  19  score_current:  5.484114e+04  score_best:  5.484114e+04  step_quality:   1.495  diag:  1.455e-02  dt_inc:   0.003597  dt_tot:   0.551403  
+solver_iter:  141  pcg_iter:  19  score_current:           nan  score_best:  5.484114e+04  step_quality:   0.000  diag:  4.850e-03  dt_inc:   0.003545  dt_tot:   0.554948  
+solver_iter:  142  pcg_iter:  19  score_current:           nan  score_best:  5.484114e+04  step_quality:   0.000  diag:  9.701e-03  dt_inc:   0.003614  dt_tot:   0.558563  
+solver_iter:  143  pcg_iter:  19  score_current:  5.483907e+04  score_best:  5.483907e+04  step_quality:   0.915  diag:  3.880e-02  dt_inc:   0.003598  dt_tot:   0.562161  
+solver_iter:  144  pcg_iter:  19  score_current:  5.483766e+04  score_best:  5.483766e+04  step_quality:   1.381  diag:  1.668e-02  dt_inc:   0.003601  dt_tot:   0.565762  
+solver_iter:  145  pcg_iter:  19  score_current:  5.483166e+04  score_best:  5.483166e+04  step_quality:   0.931  diag:  5.560e-03  dt_inc:   0.003604  dt_tot:   0.569367  
+solver_iter:  146  pcg_iter:  19  score_current:  5.482927e+04  score_best:  5.482927e+04  step_quality:   1.254  diag:  2.000e-03  dt_inc:   0.003591  dt_tot:   0.572958  
+solver_iter:  147  pcg_iter:  19  score_current:  5.482611e+04  score_best:  5.482611e+04  step_quality:   0.990  diag:  6.666e-04  dt_inc:   0.003592  dt_tot:   0.576550  
+solver_iter:  148  pcg_iter:  19  score_current:  5.482366e+04  score_best:  5.482366e+04  step_quality:   1.230  diag:  2.222e-04  dt_inc:   0.003595  dt_tot:   0.580145  
+solver_iter:  149  pcg_iter:  19  score_current:           nan  score_best:  5.482366e+04  step_quality:   0.000  diag:  7.406e-05  dt_inc:   0.003538  dt_tot:   0.583684  
+solver_iter:  150  pcg_iter:  19  score_current:           nan  score_best:  5.482366e+04  step_quality:   0.000  diag:  1.481e-04  dt_inc:   0.003532  dt_tot:   0.587216  
+solver_iter:  151  pcg_iter:  19  score_current:           nan  score_best:  5.482366e+04  step_quality:   0.000  diag:  5.925e-04  dt_inc:   0.003524  dt_tot:   0.590739  
+solver_iter:  152  pcg_iter:  19  score_current:           nan  score_best:  5.482366e+04  step_quality:   0.000  diag:  4.740e-03  dt_inc:   0.003559  dt_tot:   0.594298  
+solver_iter:  153  pcg_iter:  19  score_current:  5.482261e+04  score_best:  5.482261e+04  step_quality:   0.976  diag:  7.584e-02  dt_inc:   0.003594  dt_tot:   0.597892  
+solver_iter:  154  pcg_iter:  19  score_current:  5.482124e+04  score_best:  5.482124e+04  step_quality:   0.845  diag:  2.528e-02  dt_inc:   0.003599  dt_tot:   0.601491  
+solver_iter:  155  pcg_iter:  19  score_current:  5.482000e+04  score_best:  5.482000e+04  step_quality:   1.404  diag:  1.700e-02  dt_inc:   0.003593  dt_tot:   0.605085  
+solver_iter:  156  pcg_iter:  19  score_current:           nan  score_best:  5.482000e+04  step_quality:   0.000  diag:  5.668e-03  dt_inc:   0.003552  dt_tot:   0.608637  
+solver_iter:  157  pcg_iter:  19  score_current:           nan  score_best:  5.482000e+04  step_quality:   0.000  diag:  1.134e-02  dt_inc:   0.003571  dt_tot:   0.612209  
+solver_iter:  158  pcg_iter:  19  score_current:  5.481857e+04  score_best:  5.481857e+04  step_quality:   0.807  diag:  4.534e-02  dt_inc:   0.003596  dt_tot:   0.615804  
+solver_iter:  159  pcg_iter:  19  score_current:  5.481756e+04  score_best:  5.481756e+04  step_quality:   1.384  diag:  3.483e-02  dt_inc:   0.003603  dt_tot:   0.619408  
+solver_iter:  160  pcg_iter:  19  score_current:  5.481537e+04  score_best:  5.481537e+04  step_quality:   0.830  diag:  1.161e-02  dt_inc:   0.003596  dt_tot:   0.623004  
+solver_iter:  161  pcg_iter:  19  score_current:  5.481392e+04  score_best:  5.481392e+04  step_quality:   1.363  diag:  8.281e-03  dt_inc:   0.003604  dt_tot:   0.626608  
+solver_iter:  162  pcg_iter:  19  score_current:  5.481218e+04  score_best:  5.481218e+04  step_quality:   1.106  diag:  2.760e-03  dt_inc:   0.003607  dt_tot:   0.630215  
+solver_iter:  163  pcg_iter:  19  score_current:  5.481039e+04  score_best:  5.481039e+04  step_quality:   1.351  diag:  9.201e-04  dt_inc:   0.003637  dt_tot:   0.633852  
+solver_iter:  164  pcg_iter:  19  score_current:           nan  score_best:  5.481039e+04  step_quality:   0.000  diag:  3.067e-04  dt_inc:   0.003565  dt_tot:   0.637417  
+solver_iter:  165  pcg_iter:  19  score_current:  5.480934e+04  score_best:  5.480934e+04  step_quality:   1.186  diag:  6.134e-04  dt_inc:   0.003636  dt_tot:   0.641053  
+solver_iter:  166  pcg_iter:  19  score_current:  5.480782e+04  score_best:  5.480782e+04  step_quality:   1.388  diag:  2.045e-04  dt_inc:   0.003599  dt_tot:   0.644653  
+solver_iter:  167  pcg_iter:  19  score_current:           nan  score_best:  5.480782e+04  step_quality:   0.000  diag:  6.816e-05  dt_inc:   0.003478  dt_tot:   0.648130  
+solver_iter:  168  pcg_iter:  19  score_current:           nan  score_best:  5.480782e+04  step_quality:   0.000  diag:  1.363e-04  dt_inc:   0.003479  dt_tot:   0.651609  
+solver_iter:  169  pcg_iter:  19  score_current:           nan  score_best:  5.480782e+04  step_quality:   0.000  diag:  5.452e-04  dt_inc:   0.003497  dt_tot:   0.655106  
+solver_iter:  170  pcg_iter:  19  score_current:           nan  score_best:  5.480782e+04  step_quality:   0.000  diag:  4.362e-03  dt_inc:   0.003527  dt_tot:   0.658633  
+solver_iter:  171  pcg_iter:  19  score_current:  5.480690e+04  score_best:  5.480690e+04  step_quality:   1.056  diag:  6.979e-02  dt_inc:   0.003592  dt_tot:   0.662225  
+solver_iter:  172  pcg_iter:  19  score_current:  5.480532e+04  score_best:  5.480532e+04  step_quality:   0.826  diag:  2.326e-02  dt_inc:   0.003600  dt_tot:   0.665824  
+solver_iter:  173  pcg_iter:  19  score_current:  5.480434e+04  score_best:  5.480434e+04  step_quality:   1.447  diag:  1.684e-02  dt_inc:   0.003587  dt_tot:   0.669411  
+solver_iter:  174  pcg_iter:  19  score_current:           nan  score_best:  5.480434e+04  step_quality:   0.000  diag:  5.612e-03  dt_inc:   0.003543  dt_tot:   0.672954  
+solver_iter:  175  pcg_iter:  19  score_current:           nan  score_best:  5.480434e+04  step_quality:   0.000  diag:  1.122e-02  dt_inc:   0.003567  dt_tot:   0.676522  
+solver_iter:  176  pcg_iter:  19  score_current:  5.480321e+04  score_best:  5.480321e+04  step_quality:   0.901  diag:  4.490e-02  dt_inc:   0.003595  dt_tot:   0.680116  
+solver_iter:  177  pcg_iter:  19  score_current:  5.480250e+04  score_best:  5.480250e+04  step_quality:   1.323  diag:  2.179e-02  dt_inc:   0.003594  dt_tot:   0.683710  
+solver_iter:  178  pcg_iter:  19  score_current:  5.480095e+04  score_best:  5.480095e+04  step_quality:   1.025  diag:  7.263e-03  dt_inc:   0.003606  dt_tot:   0.687316  
+solver_iter:  179  pcg_iter:  19  score_current:  5.479980e+04  score_best:  5.479980e+04  step_quality:   1.340  diag:  2.421e-03  dt_inc:   0.003613  dt_tot:   0.690929  
+solver_iter:  180  pcg_iter:  19  score_current:           nan  score_best:  5.479980e+04  step_quality:   0.000  diag:  8.070e-04  dt_inc:   0.003571  dt_tot:   0.694500  
+solver_iter:  181  pcg_iter:  19  score_current:  5.479886e+04  score_best:  5.479886e+04  step_quality:   1.277  diag:  1.614e-03  dt_inc:   0.003605  dt_tot:   0.698105  
+solver_iter:  182  pcg_iter:  19  score_current:  5.479772e+04  score_best:  5.479772e+04  step_quality:   1.297  diag:  5.380e-04  dt_inc:   0.003607  dt_tot:   0.701711  
+solver_iter:  183  pcg_iter:  19  score_current:  5.479655e+04  score_best:  5.479655e+04  step_quality:   1.482  diag:  1.793e-04  dt_inc:   0.003602  dt_tot:   0.705313  
+solver_iter:  184  pcg_iter:  19  score_current:  5.479549e+04  score_best:  5.479549e+04  step_quality:   1.425  diag:  5.978e-05  dt_inc:   0.003584  dt_tot:   0.708897  
+solver_iter:  185  pcg_iter:  19  score_current:           nan  score_best:  5.479549e+04  step_quality:   0.000  diag:  1.993e-05  dt_inc:   0.003512  dt_tot:   0.712408  
+solver_iter:  186  pcg_iter:  19  score_current:           nan  score_best:  5.479549e+04  step_quality:   0.000  diag:  3.985e-05  dt_inc:   0.003513  dt_tot:   0.715922  
+solver_iter:  187  pcg_iter:  19  score_current:           nan  score_best:  5.479549e+04  step_quality:   0.000  diag:  1.594e-04  dt_inc:   0.003506  dt_tot:   0.719428  
+solver_iter:  188  pcg_iter:  19  score_current:           nan  score_best:  5.479549e+04  step_qualitI20260812 09:53:24.542404 217846 bundle_adjustment_caspar.cc:761] Camera 1 (SIMPLE_RADIAL) params: [1324.9, 960, 540, 0.0186185] -> [1323.38, 960, 540, 0.0183495]
+I20260812 09:53:24.542448 217846 bundle_adjustment_caspar.cc:1025] Caspar: MAX_ITERATIONS (200)
+y:   0.000  diag:  1.275e-03  dt_inc:   0.003490  dt_tot:   0.722918  
+solver_iter:  189  pcg_iter:  19  score_current:  5.479400e+04  score_best:  5.479400e+04  step_quality:   0.892  diag:  2.040e-02  dt_inc:   0.003633  dt_tot:   0.726551  
+solver_iter:  190  pcg_iter:  19  score_current:  5.479332e+04  score_best:  5.479332e+04  step_quality:   1.295  diag:  1.057e-02  dt_inc:   0.003588  dt_tot:   0.730138  
+solver_iter:  191  pcg_iter:  19  score_current:           nan  score_best:  5.479332e+04  step_quality:   0.000  diag:  3.523e-03  dt_inc:   0.003591  dt_tot:   0.733729  
+solver_iter:  192  pcg_iter:  19  score_current:  5.479150e+04  score_best:  5.479150e+04  step_quality:   0.955  diag:  7.045e-03  dt_inc:   0.003598  dt_tot:   0.737327  
+solver_iter:  193  pcg_iter:  19  score_current:  5.479044e+04  score_best:  5.479044e+04  step_quality:   1.205  diag:  2.348e-03  dt_inc:   0.003600  dt_tot:   0.740927  
+solver_iter:  194  pcg_iter:  19  score_current:  5.478968e+04  score_best:  5.478968e+04  step_quality:   1.069  diag:  7.828e-04  dt_inc:   0.003592  dt_tot:   0.744519  
+solver_iter:  195  pcg_iter:  19  score_current:  5.478862e+04  score_best:  5.478862e+04  step_quality:   1.243  diag:  2.609e-04  dt_inc:   0.003592  dt_tot:   0.748111  
+solver_iter:  196  pcg_iter:  19  score_current:           nan  score_best:  5.478862e+04  step_quality:   0.000  diag:  8.698e-05  dt_inc:   0.003491  dt_tot:   0.751602  
+solver_iter:  197  pcg_iter:  19  score_current:           nan  score_best:  5.478862e+04  step_quality:   0.000  diag:  1.740e-04  dt_inc:   0.003506  dt_tot:   0.755109  
+solver_iter:  198  pcg_iter:  19  score_current:           nan  score_best:  5.478862e+04  step_quality:   0.000  diag:  6.958e-04  dt_inc:   0.003508  dt_tot:   0.758617  
+solver_iter:  199  pcg_iter:  19  score_current:           nan  score_best:  5.478862e+04  step_quality:   0.000  diag:  5.567e-03  dt_inc:   0.002978  dt_tot:   0.761595  
+
+== CASPAR ==
+  usable solution: yes
+  num residuals:   147092
+  mean reproj err: 66.6682px -> 0.9651px
+  cheirality violations: 0 -> 0 (of 18044 points3D)
+  wall-clock:       1.050s

@@ -1,0 +1,51 @@
+loaded /workspace/bundle_adjustment/colmap_solver_comparison/run_real_simpleradial_62cam_18Kpt_caspar_ok/perturbed.bal.txt: ncam=62 npt=18044 nobs=73546
+init cost=2.48607e+08 rmse=82.2228px
+
+machine: 64 hw threads -> 62 ADMM worker threads for 62 agents
+
+== centralized Ceres SPARSE_SCHUR (baseline) ==
+iter      cost      cost_change  |gradient|   |step|    tr_ratio  tr_radius  ls_iter  iter_time  total_time
+   0  2.486070e+08    0.00e+00    9.27e+08   0.00e+00   0.00e+00  1.00e+04        0    1.66e-02    1.05e-01
+   1  5.739851e+05    2.48e+08    5.69e+07   0.00e+00   9.99e-01  3.00e+04        1    4.01e-02    1.45e-01
+   2  5.489989e+04    5.19e+05    2.29e+05   1.15e+01   1.00e+00  9.00e+04        1    9.41e-02    2.39e-01
+   3  5.473008e+04    1.70e+02    4.20e+03   1.99e+00   1.00e+00  2.70e+05        1    9.75e-02    3.37e-01
+   4  5.472701e+04    3.07e+00    1.30e+03   9.12e-01   1.00e+00  8.10e+05        1    1.02e-01    4.39e-01
+   5  5.472687e+04    1.33e-01    7.28e+01   2.47e-01   1.00e+00  2.43e+06        1    1.02e-01    5.41e-01
+Ceres Solver Report: Iterations: 6, Initial cost: 2.486070e+08, Final cost: 5.472687e+04, Termination: CONVERGENCE
+centralized: wall=0.65s iters=6 final cost=5.47269e+04 rmse=1.2199px
+
+== consensus ADMM: serial (1 thread), fixed rho ==
+  [serial  ] it  1 cost=3.98532e+07 rmse=32.9205 primal=1.272e+01 dual_res=6.614e+05 rho=1.00e+04 agents=0.434s coord=0.001s wall=0.4s
+  [serial  ] it 10 cost=5.64311e+05 rmse=3.9174 primal=1.567e+00 dual_res=5.780e+04 rho=1.00e+04 agents=0.378s coord=0.001s wall=4.0s
+  [serial  ] it 20 cost=3.07157e+05 rmse=2.8901 primal=1.007e+00 dual_res=3.278e+04 rho=1.00e+04 agents=0.326s coord=0.001s wall=7.5s
+  [serial  ] it 30 cost=2.10180e+05 rmse=2.3907 primal=7.562e-01 dual_res=2.243e+04 rho=1.00e+04 agents=0.321s coord=0.001s wall=10.8s
+  [serial  ] it 40 cost=1.50814e+05 rmse=2.0251 primal=5.850e-01 dual_res=1.759e+04 rho=1.00e+04 agents=0.318s coord=0.001s wall=14.0s
+  [serial  ] it 50 cost=1.23113e+05 rmse=1.8297 primal=4.760e-01 dual_res=1.373e+04 rho=1.00e+04 agents=0.309s coord=0.001s wall=17.1s
+  [serial  ] it 60 cost=1.03589e+05 rmse=1.6784 primal=3.944e-01 dual_res=1.109e+04 rho=1.00e+04 agents=0.306s coord=0.001s wall=20.2s
+serial ADMM (fixed rho): wall=20.19s final cost=1.03589e+05 rmse=1.6784px
+
+== consensus ADMM: parallel (62 std::thread), fixed rho ==
+  [parallel] it  1 cost=3.98532e+07 rmse=32.9205 primal=1.272e+01 dual_res=6.614e+05 rho=1.00e+04 agents=0.064s coord=0.001s wall=0.1s
+  [parallel] it 10 cost=5.64311e+05 rmse=3.9174 primal=1.567e+00 dual_res=5.780e+04 rho=1.00e+04 agents=0.099s coord=0.002s wall=0.9s
+  [parallel] it 20 cost=3.07157e+05 rmse=2.8901 primal=1.007e+00 dual_res=3.278e+04 rho=1.00e+04 agents=0.034s coord=0.001s wall=1.7s
+  [parallel] it 30 cost=2.10180e+05 rmse=2.3907 primal=7.562e-01 dual_res=2.243e+04 rho=1.00e+04 agents=0.063s coord=0.001s wall=2.3s
+  [parallel] it 40 cost=1.50814e+05 rmse=2.0251 primal=5.850e-01 dual_res=1.759e+04 rho=1.00e+04 agents=0.057s coord=0.002s wall=2.9s
+  [parallel] it 50 cost=1.23113e+05 rmse=1.8297 primal=4.760e-01 dual_res=1.373e+04 rho=1.00e+04 agents=0.091s coord=0.001s wall=3.6s
+  [parallel] it 60 cost=1.03589e+05 rmse=1.6784 primal=3.944e-01 dual_res=1.109e+04 rho=1.00e+04 agents=0.029s coord=0.001s wall=4.2s
+parallel ADMM (fixed rho): wall=4.15s final cost=1.03589e+05 rmse=1.6784px
+
+== consensus ADMM: parallel (62 std::thread), adaptive rho ==
+  [adaptive] it  1 cost=3.98532e+07 rmse=32.9205 primal=1.272e+01 dual_res=6.614e+05 rho=5.00e+03 agents=0.073s coord=0.001s wall=0.1s
+  [adaptive] it 10 cost=1.46220e+07 rmse=19.9406 primal=8.016e+00 dual_res=2.945e+04 rho=1.00e+03 agents=0.097s coord=0.001s wall=0.9s
+  [adaptive] it 20 cost=8.83154e+06 rmse=15.4972 primal=5.915e+00 dual_res=2.089e+04 rho=1.00e+03 agents=0.087s coord=0.001s wall=1.9s
+  [adaptive] it 30 cost=6.11645e+06 rmse=12.8969 primal=4.949e+00 dual_res=1.548e+04 rho=1.00e+03 agents=0.095s coord=0.001s wall=2.9s
+  [adaptive] it 40 cost=4.34243e+06 rmse=10.8668 primal=4.159e+00 dual_res=1.316e+04 rho=1.00e+03 agents=0.092s coord=0.001s wall=3.8s
+  [adaptive] it 50 cost=3.21752e+06 rmse=9.3540 primal=3.586e+00 dual_res=1.139e+04 rho=1.00e+03 agents=0.094s coord=0.001s wall=4.8s
+  [adaptive] it 60 cost=2.55151e+06 rmse=8.3298 primal=3.166e+00 dual_res=9.791e+03 rho=1.00e+03 agents=0.098s coord=0.001s wall=5.8s
+parallel ADMM (adaptive rho): wall=5.77s final cost=2.55151e+06 rmse=8.3298px final rho=1.00e+03
+
+== summary ==
+centralized (baseline):        wall=   0.65s  cost=5.47269e+04 rmse=1.2199px
+ADMM serial, fixed rho:        wall=  20.19s  cost=1.03589e+05 rmse=1.6784px
+ADMM parallel(62t), fixed rho:  wall=   4.15s  cost=1.03589e+05 rmse=1.6784px  speedup=4.86x
+ADMM parallel(62t), adaptive:   wall=   5.77s  cost=2.55151e+06 rmse=8.3298px

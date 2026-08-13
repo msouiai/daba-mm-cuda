@@ -136,6 +136,19 @@ COLMAP's `colmap_ba_compare` tool, exported to BAL, and fed to this repo's
 `daba_mm` and to a from-scratch consensus-ADMM implementation
 (`consensus_ba_benchmark`) for the same problem.
 
+![DABA-MM vs. Ceres, Caspar, and consensus-ADMM convergence](vs_ceres_caspar/convergence_vs_ceres_caspar.png)
+
+Real per-iteration cost traces (not interpolated between endpoints), parsed
+directly from each solver's own verbose logging by
+`vs_ceres_caspar/plot_vs_ceres_caspar.py` — logs and script both checked in
+under `vs_ceres_caspar/` for reproducibility. **Wall-clock caveat**: the
+verbose logging needed to get a trace at all is not free, so the times on
+this plot run somewhat slower than the quiet, representative numbers in the
+table below (e.g. Ceres took ~10.7s verbose vs. 5.895s quiet) — trust the
+table for solver-to-solver speed comparisons; trust this plot for
+convergence *shape* (how quickly each solver's cost drops, where it
+plateaus, relative ordering).
+
 | solver | wall-clock | accuracy (RMSE) |
 |---|---:|---|
 | Ceres (COLMAP path, intrinsics refined) | 5.895s | 0.9646px |

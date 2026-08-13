@@ -1,0 +1,23 @@
+loaded /workspace/bundle_adjustment/colmap_solver_comparison/run_real_simpleradial_62cam_18Kpt_caspar_ok/perturbed.bal.txt: ncam=62 npt=18044 nobs=73546
+init cost=2.486070e+08 rmse=82.2228px
+  it  10 cost=2.11747e+05 q=8 restart=0
+  it  20 cost=8.35693e+04 q=18 restart=0
+  it  30 cost=7.46726e+04 q=28 restart=0
+  it  40 cost=7.25809e+04 q=38 restart=0
+  it  50 cost=7.12834e+04 q=48 restart=0
+  it  60 cost=7.05558e+04 q=58 restart=0
+  it  70 cost=7.00709e+04 q=68 restart=0
+  it  80 cost=6.97116e+04 q=78 restart=0
+  it  90 cost=6.94743e+04 q=88 restart=0
+  it 100 cost=6.93003e+04 q=98 restart=0
+  it 110 cost=6.91607e+04 q=108 restart=0
+  it 120 cost=6.90401e+04 q=118 restart=0
+  it 130 cost=6.89343e+04 q=128 restart=0
+  it 140 cost=6.88396e+04 q=138 restart=0
+  it 150 cost=6.87583e+04 q=148 restart=0
+  it 160 cost=6.86920e+04 q=158 restart=0
+  it 170 cost=6.86400e+04 q=168 restart=0
+  it 180 cost=6.85972e+04 q=178 restart=0
+  it 190 cost=6.85607e+04 q=188 restart=0
+  it 200 cost=6.85311e+04 q=198 restart=0
+done: 200 iters, wall=0.156s (0.78 ms/iter), final cost=6.853105e+04
