@@ -124,6 +124,51 @@ the full target scale from Section 1 comfortably inside GPU memory (16GB total, 
 problem uses well under 1GB) and at a practical iteration rate, not a numpy comparison
 at that size.
 
+## vs. Ceres and Caspar, on a real COLMAP reconstruction
+
+Everything above is DABA-MM measured against itself (numpy reference,
+different iteration counts). Separately ran it against COLMAP's two
+production bundle-adjustment backends — Ceres (CPU, Levenberg-Marquardt) and
+Caspar (GPU, PCG) — on the same real problem, not a synthetic one: a real
+incremental-mapper reconstruction (62 images, 18,044 points3D, 73,546
+observations, SIMPLE_RADIAL), perturbed identically for all solvers via
+COLMAP's `colmap_ba_compare` tool, exported to BAL, and fed to this repo's
+`daba_mm` and to a from-scratch consensus-ADMM implementation
+(`consensus_ba_benchmark`) for the same problem.
+
+| solver | wall-clock | accuracy (RMSE) |
+|---|---:|---|
+| Ceres (COLMAP path, intrinsics refined) | 5.895s | 0.9646px |
+| Caspar (COLMAP path, intrinsics refined) | 0.971s | 0.9651px |
+| Centralized Ceres (BAL, intrinsics fixed) | 0.66s | 1.2199px |
+| Consensus ADMM, parallel, fixed rho | 4.10s | 1.6784px |
+| **DABA-MM, this repo (200 it, accelerated)** | **0.156s** | **1.3653px** |
+
+**Speed**: DABA-MM is the fastest solver on this problem by a wide margin —
+~6.2x faster than Caspar, ~38x faster than Ceres, ~4.2x faster than the
+centralized-Ceres baseline it's most directly comparable to (same BAL
+problem, same fixed-intrinsics setup).
+
+**Accuracy**: behind in that direct comparison — 1.37px vs. 1.22px for
+centralized Ceres on the identical BAL problem — because it hasn't fully
+converged at this fixed 200-iteration budget (no early-stopping implemented;
+cost was still measurably decreasing at iteration 200). A larger iteration
+budget would likely close most of that gap, at the cost of some of the speed
+advantage.
+
+**Comparability caveat**: the top two rows (Ceres/Caspar via COLMAP's normal
+path) refine camera intrinsics as part of the solve; DABA-MM and the
+centralized-Ceres BAL baseline both hold intrinsics fixed (this
+implementation's limitation, noted above). So the fair, apples-to-apples
+comparison is DABA-MM vs. centralized Ceres (last two rows) — same problem,
+same fixed-intrinsics setup; the Ceres/Caspar numbers are a different, easier
+problem instance, included for scale rather than a direct speed/accuracy
+comparison against DABA-MM specifically.
+
+Full writeup, per-iteration convergence plots, and raw logs for this run are
+in the COLMAP repo this was run against (not part of this standalone repo):
+`colmap_solver_comparison/run_real_simpleradial_62cam_18Kpt_caspar_ok/`.
+
 ## Convergence: adaptive restart (`--eta`, `--restart-scheme`)
 
 Investigated two literature-backed refinements to the Nesterov restart rule:
