@@ -275,6 +275,241 @@ def solve_squarem(prob, n_meta_iter, log_every=10, verbose=True, base_factor=2.0
                       f"choice={choice}")
     return R0, t0, X0, log
 
+# ------------------------------------------------------------------ multi-shift-inspired per-block damping
+# Adapted from https://github.com/msouiai/multishift-bundle-adjustment: that repo solves
+# the FULL joint camera+point normal equations with CG, exploiting Krylov shift-invariance
+# so ONE stream of matvecs yields solutions for a whole grid of LM damping values lambda at
+# once, picks whichever lambda's candidate has the lowest TRUE (non-linearized) cost, and
+# never throws away a rejected solve the way textbook Nielsen-damped LM does. Their own
+# headline finding: this wins when the baseline's rejection rate is high (>~20%), and
+# greedy min-cost selection beats gain-ratio/rho-based selection significantly.
+#
+# That mechanism doesn't transplant literally: multishift's speedup comes from reusing one
+# expensive CG matvec stream across many lambdas on a large coupled sparse system. DABA's
+# entire design avoids ever forming that system -- each camera/point block is an
+# independent 6x6/3x3 dense system, already solved by direct Cholesky, not CG. There is no
+# expensive shared computation to amortize with a Krylov trick at that scale.
+#
+# What DOES transplant is the PHILOSOPHY, adapted to what's actually expensive here: try a
+# small grid of lambda per block (cheap -- a few extra tiny Cholesky solves next to the
+# O(nobs) Jacobian-accumulation pass that actually dominates wall-clock), evaluate each
+# candidate's TRUE local nonlinear cost (not the linear model's predicted reduction --
+# matches their own "gain-ratio selection is much worse than greedy min-cost" finding),
+# and keep the best if it improves. The key adaptation: PER-BLOCK accept/reject instead of
+# one global lambda for the whole problem -- a camera or point whose local system is badly
+# conditioned this iteration simply doesn't move (frozen at the linearization point) rather
+# than being forced to move by a global lambda tuned for the average block, or corrupting
+# its neighbors on the next iteration. This directly targets the exact failure mode found
+# on the insta360x4 dataset (a handful of ill-conditioned blocks going to NaN and poisoning
+# every neighbor within 1-2 iterations, because the fixed-lambda scheme has no escape).
+#
+# Consequence worth stating plainly: per-block accept/reject makes ONE multi-lambda MM step
+# provably non-increasing in TOTAL cost (every block either improves its own local
+# contribution or stays exactly where it was) -- unlike the fixed-lambda scheme, which this
+# repo already showed CAN increase total cost even with zero acceleration involved (see the
+# SQUAREM section above and CONVERGENCE_LITERATURE.md). This is the fixed-lambda
+# monotonicity gap's direct fix, not just a speed tweak.
+def project_core(Rc, t, Pw, f, k1, k2):
+    """Pure projection math on already-gathered per-observation(-candidate) arrays --
+    no index gathers, so it works for the extra "candidate" broadcast axis multi-lambda
+    needs. Same formulas as project_and_jac, factored out for reuse; verified to agree
+    with project_and_jac at n_lambda=1 in validate_multilambda_smoke() below."""
+    Prot = np.einsum('...ij,...j->...i', Rc, Pw)
+    Pcam = Prot + t
+    Px, Py, Pz = Pcam[..., 0], Pcam[..., 1], Pcam[..., 2]
+    xp = -Px / Pz; yp = -Py / Pz; n2 = xp * xp + yp * yp
+    dist = 1 + k1 * n2 + k2 * n2 * n2
+    return np.stack([f * dist * xp, f * dist * yp], axis=-1)
+
+def per_block_local_cost(res, ci, pi, NC, NP):
+    """0.5*sum(res^2) grouped by camera / by point, at the CURRENT (unretracted) state --
+    the per-block baseline every multi-lambda candidate must beat to be accepted."""
+    obs_cost = 0.5 * np.sum(res ** 2, axis=1)
+    cam_cost = np.zeros(NC); np.add.at(cam_cost, ci, obs_cost)
+    pt_cost = np.zeros(NP); np.add.at(pt_cost, pi, obs_cost)
+    return cam_cost, pt_cost
+
+def multilambda_local_costs_cameras(R_cand, t_cand, X, ci, pi, uv, f, k1, k2):
+    """R_cand:[NC,nl,3,3] t_cand:[NC,nl,3] -> per-(camera,candidate) true local cost
+    [NC,nl], holding points fixed at X (the same linearization-point assumption every
+    other block's own surrogate already makes)."""
+    NC, nl = R_cand.shape[0], R_cand.shape[1]
+    O = len(ci)
+    Rc_exp = R_cand[ci]                                    # [O,nl,3,3]
+    tc_exp = t_cand[ci]                                    # [O,nl,3]
+    Xp_exp = np.broadcast_to(X[pi][:, None, :], (O, nl, 3))
+    fo = f[ci][:, None]; k1o = k1[ci][:, None]; k2o = k2[ci][:, None]
+    pred = project_core(Rc_exp, tc_exp, Xp_exp, fo, k1o, k2o)   # [O,nl,2]
+    obs_cost = 0.5 * np.sum((pred - uv[:, None, :]) ** 2, axis=-1)  # [O,nl]
+    cam_cost = np.zeros((NC, nl)); np.add.at(cam_cost, ci, obs_cost)
+    return cam_cost
+
+def multilambda_local_costs_points(X_cand, R, t, ci, pi, uv, f, k1, k2):
+    """Symmetric to the cameras version: X_cand:[NP,nl,3] -> [NP,nl], holding camera
+    poses fixed at R,t."""
+    NP, nl = X_cand.shape[0], X_cand.shape[1]
+    O = len(pi)
+    Xp_exp = X_cand[pi]                                    # [O,nl,3]
+    Rc_exp = np.broadcast_to(R[ci][:, None], (O, nl, 3, 3))
+    tc_exp = np.broadcast_to(t[ci][:, None, :], (O, nl, 3))
+    fo = f[ci][:, None]; k1o = k1[ci][:, None]; k2o = k2[ci][:, None]
+    pred = project_core(Rc_exp, tc_exp, Xp_exp, fo, k1o, k2o)
+    obs_cost = 0.5 * np.sum((pred - uv[:, None, :]) ** 2, axis=-1)
+    pt_cost = np.zeros((NP, nl)); np.add.at(pt_cost, pi, obs_cost)
+    return pt_cost
+
+def solve_retract_multilambda(R, t, X, res, ci, pi, uv, f, k1, k2, Hc, gc, Hp, gp,
+                               base_lam_cam, base_lam_pt, factor=2.0, n_lambda=6,
+                               decades=(-2, 2), lam_floor=1e-12, lam_ceil=1e12):
+    NC, NP = Hc.shape[0], Hp.shape[0]
+    lam_mult = np.logspace(decades[0], decades[1], n_lambda)   # relative grid, both block types
+
+    # ---- cameras: nl candidate solves per camera, batched as [NC,nl,6,6] systems ----
+    lam_cam_grid = base_lam_cam[:, None] * lam_mult[None, :]              # [NC,nl]
+    Hc_cand = (factor * Hc)[:, None] + lam_cam_grid[:, :, None, None] * np.eye(6)
+    # np.linalg.solve (NumPy >=2.0) always uses the matrix RHS signature
+    # (m,m),(m,n)->(m,n) -- no implicit vector-batch broadcasting -- so an explicit
+    # trailing singleton axis is required, squeezed back off after.
+    dC = -np.linalg.solve(Hc_cand, np.broadcast_to(gc[:, None, :, None], (NC, n_lambda, 6, 1)))[..., 0]
+    R_cand = np.einsum('cnij,cjk->cnik', rotvec_to_R(dC[..., :3]), R)     # [NC,nl,3,3]
+    t_cand = t[:, None, :] + dC[..., 3:6]                                  # [NC,nl,3]
+    cam_cost_cand = multilambda_local_costs_cameras(R_cand, t_cand, X, ci, pi, uv, f, k1, k2)
+
+    cam_cost_now, pt_cost_now = per_block_local_cost(res, ci, pi, NC, NP)
+
+    idx_c = np.arange(NC)
+    best_k_cam = np.argmin(cam_cost_cand, axis=1)
+    best_cost_cam = cam_cost_cand[idx_c, best_k_cam]
+    cam_accept = best_cost_cam < cam_cost_now
+    R_new = np.where(cam_accept[:, None, None], R_cand[idx_c, best_k_cam], R)
+    t_new = np.where(cam_accept[:, None], t_cand[idx_c, best_k_cam], t)
+    new_base_lam_cam = np.where(
+        cam_accept,
+        np.clip(lam_cam_grid[idx_c, best_k_cam] / 3.0, lam_floor, lam_ceil),
+        np.clip(base_lam_cam * 10.0, lam_floor, lam_ceil))
+
+    # ---- points: symmetric ----
+    lam_pt_grid = base_lam_pt[:, None] * lam_mult[None, :]
+    Hp_cand = (factor * Hp)[:, None] + lam_pt_grid[:, :, None, None] * np.eye(3)
+    dX = -np.linalg.solve(Hp_cand, np.broadcast_to(gp[:, None, :, None], (NP, n_lambda, 3, 1)))[..., 0]
+    X_cand = X[:, None, :] + dX
+    pt_cost_cand = multilambda_local_costs_points(X_cand, R, t, ci, pi, uv, f, k1, k2)
+
+    idx_p = np.arange(NP)
+    best_k_pt = np.argmin(pt_cost_cand, axis=1)
+    best_cost_pt = pt_cost_cand[idx_p, best_k_pt]
+    pt_accept = best_cost_pt < pt_cost_now
+    X_new = np.where(pt_accept[:, None], X_cand[idx_p, best_k_pt], X)
+    new_base_lam_pt = np.where(
+        pt_accept,
+        np.clip(lam_pt_grid[idx_p, best_k_pt] / 3.0, lam_floor, lam_ceil),
+        np.clip(base_lam_pt * 10.0, lam_floor, lam_ceil))
+
+    return (R_new, t_new, X_new, new_base_lam_cam, new_base_lam_pt,
+            int(cam_accept.sum()), int(pt_accept.sum()))
+
+def validate_multilambda_smoke(prob):
+    """n_lambda=1 at the block's own current base_lam must reduce to exactly the
+    fixed-lambda solve_retract (same H, g, lambda -> same linear solve; project_core
+    must agree with project_and_jac's own pred). Run once at import/test time, not
+    part of the outer loop -- a correctness check, not a feature."""
+    NC, NP = prob["ncam"], prob["npt"]
+    ci, pi, uv = prob["cam_idx"], prob["pt_idx"], prob["uv"]
+    f, k1, k2 = prob["cams"][:, 6].copy(), prob["cams"][:, 7].copy(), prob["cams"][:, 8].copy()
+    R = rotvec_to_R(prob["cams"][:, 0:3]); t = prob["cams"][:, 3:6].copy(); X = prob["pts"].copy()
+    res, Jc, Jp = project_and_jac(R, t, X, ci, pi, uv, f, k1, k2)
+    Hc, gc, Hp, gp = accumulate_grad_hess(R, t, X, ci, pi, uv, f, k1, k2, NC, NP)
+    lam0 = 1e-6
+    R_fixed, t_fixed, X_fixed = solve_retract(R, t, X, Hc, gc, Hp, gp, factor=2.0, lam=lam0)
+    base_lam_cam = np.full(NC, lam0); base_lam_pt = np.full(NP, lam0)
+    R_ml, t_ml, X_ml, *_ = solve_retract_multilambda(
+        R, t, X, res, ci, pi, uv, f, k1, k2, Hc, gc, Hp, gp,
+        base_lam_cam, base_lam_pt, factor=2.0, n_lambda=1, decades=(0, 0))
+    assert np.allclose(R_fixed, R_ml, atol=1e-10) and np.allclose(t_fixed, t_ml, atol=1e-10)
+    assert np.allclose(X_fixed, X_ml, atol=1e-10)
+    return True
+
+def solve_multilambda(prob, n_iter, accelerated=True, log_every=10, verbose=True,
+                       restart_scheme="function", eta=1.0, base_factor=2.0,
+                       lam0=1e-6, n_lambda=6, decades=(-2, 2)):
+    """Same Nesterov-accelerated outer loop as solve(), but every block solve goes
+    through solve_retract_multilambda instead of solve_retract -- per-block adaptive
+    damping (grid of lambda, true-cost selection, per-block accept/reject) in place
+    of one fixed lambda for every block. base_lam_cam/base_lam_pt persist across
+    outer iterations (state, unlike solve_retract's stateless fixed lambda). restart
+    logic kept identical to solve() for comparability, even though per-block
+    accept/reject already makes each step non-increasing relative to the
+    EXTRAPOLATED point y -- worth checking empirically whether restarts still fire
+    (a bad-enough y can still leave every block no better than its own current
+    state), not asserted away here."""
+    NC, NP = prob["ncam"], prob["npt"]
+    ci, pi, uv = prob["cam_idx"], prob["pt_idx"], prob["uv"]
+    f, k1, k2 = prob["cams"][:, 6].copy(), prob["cams"][:, 7].copy(), prob["cams"][:, 8].copy()
+    R_curr = rotvec_to_R(prob["cams"][:, 0:3]); t_curr = prob["cams"][:, 3:6].copy(); X_curr = prob["pts"].copy()
+    R_prev, t_prev, X_prev = R_curr.copy(), t_curr.copy(), X_curr.copy()
+    cost_curr = total_cost(R_curr, t_curr, X_curr, ci, pi, uv, f, k1, k2)
+    cost_ema = cost_curr
+    base_lam_cam = np.full(NC, lam0); base_lam_pt = np.full(NP, lam0)
+    log = {"iter": [0], "cost": [cost_curr], "restart": [False],
+           "cam_accept_frac": [1.0], "pt_accept_frac": [1.0]}
+    q = 1.0
+    for it in range(1, n_iter + 1):
+        if accelerated:
+            beta = (q - 1) / (q + 2)
+            omega = R_log(np.einsum('cij,ckj->cik', R_curr, R_prev))
+            R_y = np.einsum('cij,cjk->cik', rotvec_to_R(beta * omega), R_curr)
+            t_y = t_curr + beta * (t_curr - t_prev)
+            X_y = X_curr + beta * (X_curr - X_prev)
+        else:
+            R_y, t_y, X_y = R_curr, t_curr, X_curr
+
+        res, _, _ = project_and_jac(R_y, t_y, X_y, ci, pi, uv, f, k1, k2)
+        Hc, gc, Hp, gp = accumulate_grad_hess(R_y, t_y, X_y, ci, pi, uv, f, k1, k2, NC, NP)
+        (R_new, t_new, X_new, base_lam_cam, base_lam_pt,
+         n_cam_acc, n_pt_acc) = solve_retract_multilambda(
+            R_y, t_y, X_y, res, ci, pi, uv, f, k1, k2, Hc, gc, Hp, gp,
+            base_lam_cam, base_lam_pt, factor=base_factor, n_lambda=n_lambda,
+            decades=decades)
+        cost_new = total_cost(R_new, t_new, X_new, ci, pi, uv, f, k1, k2)
+
+        trigger = False
+        if accelerated and restart_scheme == "function":
+            trigger = cost_new > cost_ema
+        elif accelerated:
+            domega = R_log(np.einsum('cij,ckj->cik', R_new, R_curr))
+            dt = t_new - t_curr
+            dX = X_new - X_curr
+            dot = (np.sum(gc[:, :3] * domega) + np.sum(gc[:, 3:6] * dt) + np.sum(gp * dX))
+            trigger = dot > 0
+
+        restarted = False
+        if trigger:
+            res2, _, _ = project_and_jac(R_curr, t_curr, X_curr, ci, pi, uv, f, k1, k2)
+            Hc2, gc2, Hp2, gp2 = accumulate_grad_hess(R_curr, t_curr, X_curr, ci, pi, uv, f, k1, k2, NC, NP)
+            (R_new, t_new, X_new, base_lam_cam, base_lam_pt,
+             n_cam_acc, n_pt_acc) = solve_retract_multilambda(
+                R_curr, t_curr, X_curr, res2, ci, pi, uv, f, k1, k2, Hc2, gc2, Hp2, gp2,
+                base_lam_cam, base_lam_pt, factor=base_factor, n_lambda=n_lambda,
+                decades=decades)
+            cost_new = total_cost(R_new, t_new, X_new, ci, pi, uv, f, k1, k2)
+            q = max(q / 2, 1.0)
+            restarted = True
+        else:
+            q += 1
+
+        R_prev, t_prev, X_prev = R_curr, t_curr, X_curr
+        R_curr, t_curr, X_curr = R_new, t_new, X_new
+        cost_curr = cost_new
+        cost_ema = (1 - eta) * cost_ema + eta * cost_curr
+
+        if it % log_every == 0 or it == n_iter:
+            log["iter"].append(it); log["cost"].append(cost_curr); log["restart"].append(restarted)
+            log["cam_accept_frac"].append(n_cam_acc / NC); log["pt_accept_frac"].append(n_pt_acc / NP)
+            if verbose:
+                print(f"  it{it:4d} cost={cost_curr:.5e} ema={cost_ema:.5e} q={q:.3f} "
+                      f"cam_acc={n_cam_acc}/{NC} pt_acc={n_pt_acc}/{NP} restart={restarted}")
+    return R_curr, t_curr, X_curr, log
+
 # ------------------------------------------------------------------ accelerated outer loop
 def solve(prob, n_iter, accelerated=True, log_every=10, verbose=True, eta=1.0,
           restart_scheme="function", factor_scheme="fixed", base_factor=2.0, lam=1e-6,

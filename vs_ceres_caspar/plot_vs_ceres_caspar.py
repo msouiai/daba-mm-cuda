@@ -92,6 +92,8 @@ with open(f"{HERE}/consensus_ba_verbose.log") as f:
     consensus_log = f.read()
 with open(f"{HERE}/daba_mm.log") as f:
     daba_log = f.read()
+with open(f"{HERE}/daba_mm_multilambda.log") as f:
+    daba_ml_log = f.read()
 
 ceres_it, ceres_cost, ceres_t = parse_ceres_table(colmap_log, "iter      cost", "== CASPAR ==")
 caspar_it, caspar_cost, caspar_t = parse_caspar_table(
@@ -102,9 +104,10 @@ central_it, central_cost, central_t = parse_ceres_table(
 )
 admm_par_fixed = parse_admm_block(consensus_log, "parallel] it")
 daba_it, daba_cost, daba_t = parse_daba(daba_log)
+daba_ml_it, daba_ml_cost, daba_ml_t = parse_daba(daba_ml_log)
 
 assert len(ceres_it) > 5 and len(caspar_it) > 5 and len(central_it) > 3
-assert len(admm_par_fixed[0]) >= 6 and daba_t
+assert len(admm_par_fixed[0]) >= 6 and daba_t and daba_ml_t
 
 # ------------------------------------------------------------------ plotting: matches
 # the table's 5 rows exactly (drops serial ADMM and adaptive-rho ADMM, which the table
@@ -118,6 +121,7 @@ series = [
     (central_t, central_cost, "^-", "#2ca02c", "Centralized Ceres (BAL, intrinsics fixed)"),
     (admm_par_fixed[2], admm_par_fixed[1], "v-", "#9467bd", "Consensus ADMM, parallel, fixed rho"),
     (daba_t, daba_cost, "x-", "#17becf", "DABA-MM (200 it, accelerated)"),
+    (daba_ml_t, daba_ml_cost, "*-", "#e377c2", "DABA-MM + multi-lambda damping"),
 ]
 for t, cost, style, color, label in series:
     ax.plot(t, cost, style, color=color, label=label, markersize=5)

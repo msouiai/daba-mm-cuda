@@ -595,6 +595,240 @@ __global__ void KernelSquaremRetractPoints(const Scalar* __restrict__ X0, const 
   }
 }
 
+// ============================================================== Kernel H: multi-lambda per-block damping
+// Adapted from https://github.com/msouiai/multishift-bundle-adjustment: that repo solves
+// the FULL coupled normal equations with CG, exploiting Krylov shift-invariance so one
+// matvec stream serves a whole grid of LM lambda values, picks whichever candidate has the
+// lowest TRUE (non-linearized) cost, greedy min-cost beating gain-ratio selection by their
+// own finding. Doesn't transplant literally -- DABA's blocks are independent 6x6/3x3 dense
+// systems already solved by direct Cholesky, no large system to amortize a Krylov trick
+// over. What transplants is the philosophy: try a small lambda grid per block (cheap --
+// n_lambda extra tiny Cholesky solves next to the O(nobs) accumulate pass that actually
+// dominates wall-clock), evaluate each by TRUE local nonlinear cost, keep the best if it
+// improves. Adaptation: PER-BLOCK accept/reject, not one global lambda -- an ill-
+// conditioned block freezes at y instead of moving by a lambda tuned for the average block
+// or corrupting neighbors next iteration. See reference_mm.py's solve_retract_multilambda
+// for the derivation and CONVERGENCE_LITERATURE.md for why this matters (the insta360x4
+// NaN-cascade failure this targets).
+
+// Per-block cost at the CURRENT (pre-retraction, linearization-point) state -- the
+// baseline every candidate must beat. Separate pass from KernelJacobianAccumulate (not
+// fused into it) to avoid touching that already-validated kernel; the extra O(nobs) pass
+// is cheap next to the Jacobian accumulation work already paid for this iteration.
+__global__ void KernelPerBlockCostNow(const int* __restrict__ cam_idx,
+                                       const int* __restrict__ pt_idx,
+                                       const Scalar* __restrict__ uv,
+                                       const Scalar* __restrict__ R, const Scalar* __restrict__ t,
+                                       const Scalar* __restrict__ X, const Scalar* __restrict__ f,
+                                       const Scalar* __restrict__ k1, const Scalar* __restrict__ k2,
+                                       int nobs, Scalar* __restrict__ cam_cost_now,
+                                       Scalar* __restrict__ pt_cost_now) {
+  int o = blockIdx.x * blockDim.x + threadIdx.x;
+  if (o >= nobs) return;
+  int c = cam_idx[o], p = pt_idx[o];
+  const Scalar* Rc = R + 9 * c;
+  Scalar Xp0 = X[3 * p], Xp1 = X[3 * p + 1], Xp2 = X[3 * p + 2];
+  Scalar rx = Rc[0] * Xp0 + Rc[1] * Xp1 + Rc[2] * Xp2;
+  Scalar ry = Rc[3] * Xp0 + Rc[4] * Xp1 + Rc[5] * Xp2;
+  Scalar rz = Rc[6] * Xp0 + Rc[7] * Xp1 + Rc[8] * Xp2;
+  Scalar Px = rx + t[3 * c], Py = ry + t[3 * c + 1], Pz = rz + t[3 * c + 2];
+  Scalar xp = -Px / Pz, yp = -Py / Pz;
+  Scalar r2 = xp * xp + yp * yp;
+  Scalar fo = f[c], k1o = k1[c], k2o = k2[c];
+  Scalar dist = 1.0 + k1o * r2 + k2o * r2 * r2;
+  Scalar res0 = fo * dist * xp - uv[2 * o];
+  Scalar res1 = fo * dist * yp - uv[2 * o + 1];
+  Scalar cost = 0.5 * (res0 * res0 + res1 * res1);
+  atomicAdd(&cam_cost_now[c], cost);
+  atomicAdd(&pt_cost_now[p], cost);
+}
+
+// One thread per (camera, candidate). lam_mult: small [n_lambda] grid of relative
+// multipliers, shared by every block; base_lam_cam: per-camera persistent state.
+__global__ void KernelMultiLambdaSolveCameras(
+    const Scalar* __restrict__ Hc_raw, const Scalar* __restrict__ gc,
+    const Scalar* __restrict__ base_lam_cam, const Scalar* __restrict__ lam_mult,
+    int ncam, int n_lambda, Scalar factor, Scalar* __restrict__ dC_cand,
+    Scalar* __restrict__ lam_used) {
+  int idx = blockIdx.x * blockDim.x + threadIdx.x;
+  int total = ncam * n_lambda;
+  if (idx >= total) return;
+  int c = idx / n_lambda, k = idx % n_lambda;
+  Scalar lam = base_lam_cam[c] * lam_mult[k];
+  lam_used[idx] = lam;
+  Scalar H[6][6];
+#pragma unroll
+  for (int i = 0; i < 6; ++i)
+#pragma unroll
+    for (int j = 0; j < 6; ++j) H[i][j] = factor * Hc_raw[36 * c + 6 * i + j];
+#pragma unroll
+  for (int i = 0; i < 6; ++i) H[i][i] += lam;
+  Scalar b[6];
+#pragma unroll
+  for (int i = 0; i < 6; ++i) b[i] = gc[6 * c + i];
+  Scalar x[6];
+  CholeskySolve<6>(H, b, x);
+#pragma unroll
+  for (int i = 0; i < 6; ++i) dC_cand[6 * idx + i] = -x[i];
+}
+
+__global__ void KernelMultiLambdaSolvePoints(
+    const Scalar* __restrict__ Hp_raw, const Scalar* __restrict__ gp,
+    const Scalar* __restrict__ base_lam_pt, const Scalar* __restrict__ lam_mult,
+    int npt, int n_lambda, Scalar factor, Scalar* __restrict__ dX_cand,
+    Scalar* __restrict__ lam_used) {
+  int idx = blockIdx.x * blockDim.x + threadIdx.x;
+  int total = npt * n_lambda;
+  if (idx >= total) return;
+  int p = idx / n_lambda, k = idx % n_lambda;
+  Scalar lam = base_lam_pt[p] * lam_mult[k];
+  lam_used[idx] = lam;
+  Scalar H[3][3];
+#pragma unroll
+  for (int i = 0; i < 3; ++i)
+#pragma unroll
+    for (int j = 0; j < 3; ++j) H[i][j] = factor * Hp_raw[9 * p + 3 * i + j];
+#pragma unroll
+  for (int i = 0; i < 3; ++i) H[i][i] += lam;
+  Scalar b[3] = {gp[3 * p], gp[3 * p + 1], gp[3 * p + 2]};
+  Scalar x[3];
+  CholeskySolve<3>(H, b, x);
+#pragma unroll
+  for (int i = 0; i < 3; ++i) dX_cand[3 * idx + i] = -x[i];
+}
+
+// One thread per (observation, candidate): evaluate TRUE local cost of each camera
+// candidate step, holding points fixed at the CURRENT y-state (same linearization-point
+// assumption Hc/gc were computed under). dC_cand indexed [c*n_lambda+k].
+__global__ void KernelMultiLambdaCandidateCostCameras(
+    const int* __restrict__ cam_idx, const int* __restrict__ pt_idx,
+    const Scalar* __restrict__ uv, const Scalar* __restrict__ R, const Scalar* __restrict__ t,
+    const Scalar* __restrict__ X, const Scalar* __restrict__ f, const Scalar* __restrict__ k1,
+    const Scalar* __restrict__ k2, const Scalar* __restrict__ dC_cand, int nobs, int n_lambda,
+    Scalar* __restrict__ cam_cost_cand) {
+  int idx = blockIdx.x * blockDim.x + threadIdx.x;
+  int total = nobs * n_lambda;
+  if (idx >= total) return;
+  int o = idx / n_lambda, k = idx % n_lambda;
+  int c = cam_idx[o], p = pt_idx[o];
+  const Scalar* dC = dC_cand + 6 * (c * n_lambda + k);
+  Scalar dR[9];
+  ExpSO3(dC, dR);
+  Scalar Rc[9];
+  Mat3Mul(dR, R + 9 * c, Rc);
+  Scalar tx = t[3 * c] + dC[3], ty = t[3 * c + 1] + dC[4], tz = t[3 * c + 2] + dC[5];
+
+  Scalar Xp0 = X[3 * p], Xp1 = X[3 * p + 1], Xp2 = X[3 * p + 2];
+  Scalar rx = Rc[0] * Xp0 + Rc[1] * Xp1 + Rc[2] * Xp2;
+  Scalar ry = Rc[3] * Xp0 + Rc[4] * Xp1 + Rc[5] * Xp2;
+  Scalar rz = Rc[6] * Xp0 + Rc[7] * Xp1 + Rc[8] * Xp2;
+  Scalar Px = rx + tx, Py = ry + ty, Pz = rz + tz;
+  Scalar xp = -Px / Pz, yp = -Py / Pz;
+  Scalar r2 = xp * xp + yp * yp;
+  Scalar fo = f[c], k1o = k1[c], k2o = k2[c];
+  Scalar dist = 1.0 + k1o * r2 + k2o * r2 * r2;
+  Scalar res0 = fo * dist * xp - uv[2 * o];
+  Scalar res1 = fo * dist * yp - uv[2 * o + 1];
+  atomicAdd(&cam_cost_cand[c * n_lambda + k], 0.5 * (res0 * res0 + res1 * res1));
+}
+
+// Symmetric: point candidates, holding camera poses fixed at y.
+__global__ void KernelMultiLambdaCandidateCostPoints(
+    const int* __restrict__ cam_idx, const int* __restrict__ pt_idx,
+    const Scalar* __restrict__ uv, const Scalar* __restrict__ R, const Scalar* __restrict__ t,
+    const Scalar* __restrict__ X, const Scalar* __restrict__ f, const Scalar* __restrict__ k1,
+    const Scalar* __restrict__ k2, const Scalar* __restrict__ dX_cand, int nobs, int n_lambda,
+    Scalar* __restrict__ pt_cost_cand) {
+  int idx = blockIdx.x * blockDim.x + threadIdx.x;
+  int total = nobs * n_lambda;
+  if (idx >= total) return;
+  int o = idx / n_lambda, k = idx % n_lambda;
+  int c = cam_idx[o], p = pt_idx[o];
+  const Scalar* dX = dX_cand + 3 * (p * n_lambda + k);
+  Scalar Xp0 = X[3 * p] + dX[0], Xp1 = X[3 * p + 1] + dX[1], Xp2 = X[3 * p + 2] + dX[2];
+
+  const Scalar* Rc = R + 9 * c;
+  Scalar rx = Rc[0] * Xp0 + Rc[1] * Xp1 + Rc[2] * Xp2;
+  Scalar ry = Rc[3] * Xp0 + Rc[4] * Xp1 + Rc[5] * Xp2;
+  Scalar rz = Rc[6] * Xp0 + Rc[7] * Xp1 + Rc[8] * Xp2;
+  Scalar Px = rx + t[3 * c], Py = ry + t[3 * c + 1], Pz = rz + t[3 * c + 2];
+  Scalar xp = -Px / Pz, yp = -Py / Pz;
+  Scalar r2 = xp * xp + yp * yp;
+  Scalar fo = f[c], k1o = k1[c], k2o = k2[c];
+  Scalar dist = 1.0 + k1o * r2 + k2o * r2 * r2;
+  Scalar res0 = fo * dist * xp - uv[2 * o];
+  Scalar res1 = fo * dist * yp - uv[2 * o + 1];
+  atomicAdd(&pt_cost_cand[p * n_lambda + k], 0.5 * (res0 * res0 + res1 * res1));
+}
+
+// One thread per camera: pick the best candidate (if any beats cam_cost_now), retract
+// into R_new/t_new, update base_lam_cam for next iteration (accept: chosen/3; reject:
+// base_lam_cam*10), count accepted blocks for logging.
+__global__ void KernelMultiLambdaSelectCameras(
+    const Scalar* __restrict__ R, const Scalar* __restrict__ t,
+    const Scalar* __restrict__ dC_cand, const Scalar* __restrict__ lam_used,
+    const Scalar* __restrict__ cam_cost_cand, const Scalar* __restrict__ cam_cost_now,
+    int ncam, int n_lambda, Scalar lam_floor, Scalar lam_ceil,
+    Scalar* __restrict__ R_new, Scalar* __restrict__ t_new,
+    Scalar* __restrict__ base_lam_cam, int* __restrict__ num_accepted) {
+  int c = blockIdx.x * blockDim.x + threadIdx.x;
+  if (c >= ncam) return;
+  int best_k = 0;
+  Scalar best_cost = cam_cost_cand[c * n_lambda];
+#pragma unroll
+  for (int k = 1; k < n_lambda; ++k) {
+    Scalar ck = cam_cost_cand[c * n_lambda + k];
+    if (ck < best_cost) { best_cost = ck; best_k = k; }
+  }
+  if (best_cost < cam_cost_now[c]) {
+    const Scalar* dC = dC_cand + 6 * (c * n_lambda + best_k);
+    Scalar dR[9];
+    ExpSO3(dC, dR);
+    Mat3Mul(dR, R + 9 * c, R_new + 9 * c);
+    t_new[3 * c] = t[3 * c] + dC[3];
+    t_new[3 * c + 1] = t[3 * c + 1] + dC[4];
+    t_new[3 * c + 2] = t[3 * c + 2] + dC[5];
+    Scalar target = lam_used[c * n_lambda + best_k] / (Scalar)3;
+    base_lam_cam[c] = target < lam_floor ? lam_floor : (target > lam_ceil ? lam_ceil : target);
+    atomicAdd(num_accepted, 1);
+  } else {
+    for (int i = 0; i < 9; ++i) R_new[9 * c + i] = R[9 * c + i];
+    t_new[3 * c] = t[3 * c]; t_new[3 * c + 1] = t[3 * c + 1]; t_new[3 * c + 2] = t[3 * c + 2];
+    Scalar target = base_lam_cam[c] * (Scalar)10;
+    base_lam_cam[c] = target < lam_floor ? lam_floor : (target > lam_ceil ? lam_ceil : target);
+  }
+}
+
+__global__ void KernelMultiLambdaSelectPoints(
+    const Scalar* __restrict__ X, const Scalar* __restrict__ dX_cand,
+    const Scalar* __restrict__ lam_used, const Scalar* __restrict__ pt_cost_cand,
+    const Scalar* __restrict__ pt_cost_now, int npt, int n_lambda, Scalar lam_floor,
+    Scalar lam_ceil, Scalar* __restrict__ X_new, Scalar* __restrict__ base_lam_pt,
+    int* __restrict__ num_accepted) {
+  int p = blockIdx.x * blockDim.x + threadIdx.x;
+  if (p >= npt) return;
+  int best_k = 0;
+  Scalar best_cost = pt_cost_cand[p * n_lambda];
+#pragma unroll
+  for (int k = 1; k < n_lambda; ++k) {
+    Scalar ck = pt_cost_cand[p * n_lambda + k];
+    if (ck < best_cost) { best_cost = ck; best_k = k; }
+  }
+  if (best_cost < pt_cost_now[p]) {
+    const Scalar* dX = dX_cand + 3 * (p * n_lambda + best_k);
+    X_new[3 * p] = X[3 * p] + dX[0];
+    X_new[3 * p + 1] = X[3 * p + 1] + dX[1];
+    X_new[3 * p + 2] = X[3 * p + 2] + dX[2];
+    Scalar target = lam_used[p * n_lambda + best_k] / (Scalar)3;
+    base_lam_pt[p] = target < lam_floor ? lam_floor : (target > lam_ceil ? lam_ceil : target);
+    atomicAdd(num_accepted, 1);
+  } else {
+    X_new[3 * p] = X[3 * p]; X_new[3 * p + 1] = X[3 * p + 1]; X_new[3 * p + 2] = X[3 * p + 2];
+    Scalar target = base_lam_pt[p] * (Scalar)10;
+    base_lam_pt[p] = target < lam_floor ? lam_floor : (target > lam_ceil ? lam_ceil : target);
+  }
+}
+
 // ============================================================== host orchestration
 struct DeviceProblem {
   int ncam, npt, nobs;
@@ -717,6 +951,58 @@ Scalar BBFactor(Scalar s_dot_s, Scalar s_dot_yd, Scalar base_factor, Scalar prev
   return (1 - tau) * prev_factor + tau * target;
 }
 
+// Per-block multi-lambda damped solve (Kernel H set above): replaces SolveRetract with
+// a small lambda grid per block, true-cost selection, per-block accept/reject.
+// base_lam_cam/base_lam_pt persist across outer iterations (mutated in place); d_lam_mult
+// holds the (small, fixed) relative grid, uploaded once by the caller. Writes accepted
+// states into out; returns accepted-block counts via out params for logging.
+void SolveRetractMultiLambda(const DeviceProblem& p, const DeviceState& y, const DeviceState& out,
+                              Scalar* Hc, Scalar* gc, Scalar* Hp, Scalar* gp,
+                              Scalar* base_lam_cam, Scalar* base_lam_pt, Scalar* d_lam_mult,
+                              int n_lambda, Scalar factor, Scalar lam_floor, Scalar lam_ceil,
+                              Scalar* dC_cand, Scalar* dX_cand, Scalar* lam_used_cam,
+                              Scalar* lam_used_pt, Scalar* cam_cost_cand, Scalar* pt_cost_cand,
+                              Scalar* cam_cost_now, Scalar* pt_cost_now, int* d_num_accepted,
+                              int* num_cam_accepted, int* num_pt_accepted) {
+  const int block = 256;
+  CUDA_CHECK(cudaMemset(cam_cost_now, 0, (size_t)p.ncam * sizeof(Scalar)));
+  CUDA_CHECK(cudaMemset(pt_cost_now, 0, (size_t)p.npt * sizeof(Scalar)));
+  KernelPerBlockCostNow<<<GridSize(p.nobs, block), block>>>(
+      p.cam_idx, p.pt_idx, p.uv, y.R, y.t, y.X, p.f, p.k1, p.k2, p.nobs, cam_cost_now,
+      pt_cost_now);
+
+  KernelMultiLambdaSolveCameras<<<GridSize(p.ncam * n_lambda, block), block>>>(
+      Hc, gc, base_lam_cam, d_lam_mult, p.ncam, n_lambda, factor, dC_cand, lam_used_cam);
+  KernelMultiLambdaSolvePoints<<<GridSize(p.npt * n_lambda, block), block>>>(
+      Hp, gp, base_lam_pt, d_lam_mult, p.npt, n_lambda, factor, dX_cand, lam_used_pt);
+  CUDA_CHECK(cudaGetLastError());
+
+  CUDA_CHECK(cudaMemset(cam_cost_cand, 0, (size_t)p.ncam * n_lambda * sizeof(Scalar)));
+  CUDA_CHECK(cudaMemset(pt_cost_cand, 0, (size_t)p.npt * n_lambda * sizeof(Scalar)));
+  KernelMultiLambdaCandidateCostCameras<<<GridSize(p.nobs * n_lambda, block), block>>>(
+      p.cam_idx, p.pt_idx, p.uv, y.R, y.t, y.X, p.f, p.k1, p.k2, dC_cand, p.nobs, n_lambda,
+      cam_cost_cand);
+  KernelMultiLambdaCandidateCostPoints<<<GridSize(p.nobs * n_lambda, block), block>>>(
+      p.cam_idx, p.pt_idx, p.uv, y.R, y.t, y.X, p.f, p.k1, p.k2, dX_cand, p.nobs, n_lambda,
+      pt_cost_cand);
+  CUDA_CHECK(cudaGetLastError());
+
+  int zero = 0;
+  CUDA_CHECK(cudaMemcpy(d_num_accepted, &zero, sizeof(int), cudaMemcpyHostToDevice));
+  KernelMultiLambdaSelectCameras<<<GridSize(p.ncam, block), block>>>(
+      y.R, y.t, dC_cand, lam_used_cam, cam_cost_cand, cam_cost_now, p.ncam, n_lambda,
+      lam_floor, lam_ceil, out.R, out.t, base_lam_cam, d_num_accepted);
+  CUDA_CHECK(cudaGetLastError());
+  CUDA_CHECK(cudaMemcpy(num_cam_accepted, d_num_accepted, sizeof(int), cudaMemcpyDeviceToHost));
+
+  CUDA_CHECK(cudaMemcpy(d_num_accepted, &zero, sizeof(int), cudaMemcpyHostToDevice));
+  KernelMultiLambdaSelectPoints<<<GridSize(p.npt, block), block>>>(
+      y.X, dX_cand, lam_used_pt, pt_cost_cand, pt_cost_now, p.npt, n_lambda, lam_floor,
+      lam_ceil, out.X, base_lam_pt, d_num_accepted);
+  CUDA_CHECK(cudaGetLastError());
+  CUDA_CHECK(cudaMemcpy(num_pt_accepted, d_num_accepted, sizeof(int), cudaMemcpyDeviceToHost));
+}
+
 // One SQUAREM meta-iteration (S3 scheme). Two-way safeguard matching the textbook
 // design and this file's own Nesterov-restart branch (which also accepts whatever
 // mm_step(curr) produces without comparing against the pre-restart cost) -- not a
@@ -829,6 +1115,29 @@ void PrintUsage(const char* prog) {
                "                 MM happens to visit. See CONVERGENCE_LITERATURE.md for\n"
                "                 the full results and what this implies for the lack of\n"
                "                 adaptive damping in this file's block solve generally.\n"
+               "  --damping-scheme  fixed (default) or multilambda. multilambda: per-\n"
+               "                 block adaptive damping inspired by\n"
+               "                 github.com/msouiai/multishift-bundle-adjustment -- that\n"
+               "                 repo solves the full coupled normal equations with CG,\n"
+               "                 exploiting Krylov shift-invariance so one matvec stream\n"
+               "                 serves a whole grid of LM lambda at once, picking the\n"
+               "                 candidate with lowest TRUE cost (their own finding:\n"
+               "                 greedy min-cost beats gain-ratio selection). Doesn't\n"
+               "                 transplant literally -- DABA's blocks are independent\n"
+               "                 6x6/3x3 dense systems, no large system to amortize a\n"
+               "                 Krylov trick over -- so here each block tries a small\n"
+               "                 lambda grid directly (cheap Cholesky re-solves, not CG),\n"
+               "                 evaluates true local cost per candidate, and accepts/\n"
+               "                 rejects PER BLOCK (an ill-conditioned block freezes\n"
+               "                 instead of moving by a lambda tuned for the average\n"
+               "                 block or corrupting neighbors next iteration). Only\n"
+               "                 implemented under --accel-scheme nesterov. See\n"
+               "                 CONVERGENCE_LITERATURE.md for measured results.\n"
+               "  --ml-n-lambda  candidates per block for multilambda (default 6).\n"
+               "  --ml-decades   relative lambda grid span as \"lo,hi\" decades around\n"
+               "                 each block's own base lambda (default -2,2).\n"
+               "  --ml-lam0      initial per-block lambda before any block has adapted\n"
+               "                 (default 1e-6, matches --lam's default).\n"
                "  --loss         l2 (default) or huber; huber is not implemented\n"
                "                 (optional extension, Section 7) -- passing it\n"
                "                 prints a warning and falls back to l2 rather\n"
@@ -852,6 +1161,10 @@ int main(int argc, char** argv) {
   std::string factor_scheme = "fixed";
   Scalar factor_tau = 1.0;
   std::string accel_scheme = "nesterov";
+  std::string damping_scheme = "fixed";
+  int ml_n_lambda = 6;
+  Scalar ml_decade_lo = -2.0, ml_decade_hi = 2.0;
+  Scalar ml_lam0 = 1e-6, ml_lam_floor = 1e-12, ml_lam_ceil = 1e12;
   std::string loss = "l2";
   bool fp64 = true;
 
@@ -874,6 +1187,15 @@ int main(int argc, char** argv) {
     else if (a == "--factor-scheme") factor_scheme = next();
     else if (a == "--factor-tau") factor_tau = std::atof(next().c_str());
     else if (a == "--accel-scheme") accel_scheme = next();
+    else if (a == "--damping-scheme") damping_scheme = next();
+    else if (a == "--ml-n-lambda") ml_n_lambda = std::atoi(next().c_str());
+    else if (a == "--ml-decades") {
+      std::string v = next();
+      size_t comma = v.find(',');
+      ml_decade_lo = std::atof(v.substr(0, comma).c_str());
+      ml_decade_hi = std::atof(v.substr(comma + 1).c_str());
+    }
+    else if (a == "--ml-lam0") ml_lam0 = std::atof(next().c_str());
     else if (a == "--loss") loss = next();
     else if (a == "--fp64") fp64 = std::atoi(next().c_str()) != 0;
     else if (a == "-h" || a == "--help") { PrintUsage(argv[0]); return EXIT_SUCCESS; }
@@ -893,6 +1215,16 @@ int main(int argc, char** argv) {
   if (accel_scheme != "nesterov" && accel_scheme != "squarem") {
     std::fprintf(stderr, "--accel-scheme must be 'nesterov' or 'squarem', got '%s'\n",
                  accel_scheme.c_str());
+    return EXIT_FAILURE;
+  }
+  if (damping_scheme != "fixed" && damping_scheme != "multilambda") {
+    std::fprintf(stderr, "--damping-scheme must be 'fixed' or 'multilambda', got '%s'\n",
+                 damping_scheme.c_str());
+    return EXIT_FAILURE;
+  }
+  if (damping_scheme == "multilambda" && accel_scheme != "nesterov") {
+    std::fprintf(stderr, "--damping-scheme multilambda only implemented under "
+                          "--accel-scheme nesterov\n");
     return EXIT_FAILURE;
   }
   if (loss != "l2") {
@@ -979,6 +1311,40 @@ int main(int argc, char** argv) {
   CUDA_CHECK(cudaMalloc(&d_rnorm2, sizeof(Scalar)));
   CUDA_CHECK(cudaMalloc(&d_vnorm2, sizeof(Scalar)));
 
+  Scalar *ml_base_lam_cam, *ml_base_lam_pt, *ml_lam_mult, *ml_dC_cand, *ml_dX_cand,
+      *ml_lam_used_cam, *ml_lam_used_pt, *ml_cam_cost_cand, *ml_pt_cost_cand,
+      *ml_cam_cost_now, *ml_pt_cost_now;
+  int* ml_d_num_accepted;
+  if (damping_scheme == "multilambda") {
+    CUDA_CHECK(cudaMalloc(&ml_base_lam_cam, (size_t)bal.ncam * sizeof(Scalar)));
+    CUDA_CHECK(cudaMalloc(&ml_base_lam_pt, (size_t)bal.npt * sizeof(Scalar)));
+    CUDA_CHECK(cudaMalloc(&ml_lam_mult, (size_t)ml_n_lambda * sizeof(Scalar)));
+    CUDA_CHECK(cudaMalloc(&ml_dC_cand, (size_t)6 * bal.ncam * ml_n_lambda * sizeof(Scalar)));
+    CUDA_CHECK(cudaMalloc(&ml_dX_cand, (size_t)3 * bal.npt * ml_n_lambda * sizeof(Scalar)));
+    CUDA_CHECK(cudaMalloc(&ml_lam_used_cam, (size_t)bal.ncam * ml_n_lambda * sizeof(Scalar)));
+    CUDA_CHECK(cudaMalloc(&ml_lam_used_pt, (size_t)bal.npt * ml_n_lambda * sizeof(Scalar)));
+    CUDA_CHECK(cudaMalloc(&ml_cam_cost_cand, (size_t)bal.ncam * ml_n_lambda * sizeof(Scalar)));
+    CUDA_CHECK(cudaMalloc(&ml_pt_cost_cand, (size_t)bal.npt * ml_n_lambda * sizeof(Scalar)));
+    CUDA_CHECK(cudaMalloc(&ml_cam_cost_now, (size_t)bal.ncam * sizeof(Scalar)));
+    CUDA_CHECK(cudaMalloc(&ml_pt_cost_now, (size_t)bal.npt * sizeof(Scalar)));
+    CUDA_CHECK(cudaMalloc(&ml_d_num_accepted, sizeof(int)));
+
+    std::vector<Scalar> h_base_lam_cam(bal.ncam, ml_lam0), h_base_lam_pt(bal.npt, ml_lam0);
+    CUDA_CHECK(cudaMemcpy(ml_base_lam_cam, h_base_lam_cam.data(), bal.ncam * sizeof(Scalar),
+                          cudaMemcpyHostToDevice));
+    CUDA_CHECK(cudaMemcpy(ml_base_lam_pt, h_base_lam_pt.data(), bal.npt * sizeof(Scalar),
+                          cudaMemcpyHostToDevice));
+    std::vector<Scalar> h_lam_mult(ml_n_lambda);
+    for (int k = 0; k < ml_n_lambda; ++k) {
+      Scalar frac = ml_n_lambda == 1 ? (Scalar)0
+                                      : (Scalar)k / (Scalar)(ml_n_lambda - 1);
+      Scalar decade = ml_decade_lo + frac * (ml_decade_hi - ml_decade_lo);
+      h_lam_mult[k] = std::pow((Scalar)10, decade);
+    }
+    CUDA_CHECK(cudaMemcpy(ml_lam_mult, h_lam_mult.data(), ml_n_lambda * sizeof(Scalar),
+                          cudaMemcpyHostToDevice));
+  }
+
   Scalar cost_curr = ComputeCost(p, curr, d_cost);
   Scalar rmse0 = std::sqrt(cost_curr * 2.0 / bal.nobs);
   std::printf("init cost=%.6e rmse=%.4fpx\n", cost_curr, rmse0);
@@ -1020,6 +1386,72 @@ int main(int argc, char** argv) {
     std::printf("done: %d meta-iters (%d mm_step-equiv), wall=%.3fs (%.2f ms/mm_step-equiv), "
                 "final cost=%.6e\n",
                 n_iter, mmstep_count, wall, 1000.0 * wall / mmstep_count, cost_curr);
+    return 0;
+  }
+  if (damping_scheme == "multilambda") {
+    for (int it = 1; it <= n_iter; ++it) {
+      if (accelerated) {
+        Scalar beta = (q - 1) / (q + 2);
+        KernelExtrapolateCameras<<<GridSize(bal.ncam, block), block>>>(
+            curr.R, prev.R, curr.t, prev.t, bal.ncam, beta, y.R, y.t);
+        KernelExtrapolatePoints<<<GridSize(3 * bal.npt, block), block>>>(curr.X, prev.X,
+                                                                          bal.npt, beta, y.X);
+        CUDA_CHECK(cudaGetLastError());
+      } else {
+        CopyState(y, curr, bal.ncam, bal.npt);
+      }
+
+      AccumulateGradHess(p, y, Hc, gc, Hp, gp, d_cost);
+      int n_cam_acc = 0, n_pt_acc = 0;
+      SolveRetractMultiLambda(p, y, next, Hc, gc, Hp, gp, ml_base_lam_cam, ml_base_lam_pt,
+                              ml_lam_mult, ml_n_lambda, factor, ml_lam_floor, ml_lam_ceil,
+                              ml_dC_cand, ml_dX_cand, ml_lam_used_cam, ml_lam_used_pt,
+                              ml_cam_cost_cand, ml_pt_cost_cand, ml_cam_cost_now,
+                              ml_pt_cost_now, ml_d_num_accepted, &n_cam_acc, &n_pt_acc);
+      Scalar cost_new = ComputeCost(p, next, d_cost);
+
+      bool trigger = false;
+      if (accelerated) {
+        if (restart_scheme == "gradient") {
+          Scalar dot = GradientRestartDot(next, curr, gc, gp, bal.ncam, bal.npt, d_dot);
+          trigger = dot > 0;
+        } else {
+          trigger = cost_new > cost_ema;
+        }
+      }
+
+      bool restarted = false;
+      if (trigger) {
+        AccumulateGradHess(p, curr, Hc, gc, Hp, gp, d_cost);
+        SolveRetractMultiLambda(p, curr, next, Hc, gc, Hp, gp, ml_base_lam_cam, ml_base_lam_pt,
+                                ml_lam_mult, ml_n_lambda, factor, ml_lam_floor, ml_lam_ceil,
+                                ml_dC_cand, ml_dX_cand, ml_lam_used_cam, ml_lam_used_pt,
+                                ml_cam_cost_cand, ml_pt_cost_cand, ml_cam_cost_now,
+                                ml_pt_cost_now, ml_d_num_accepted, &n_cam_acc, &n_pt_acc);
+        cost_new = ComputeCost(p, next, d_cost);
+        q = std::max(q / (Scalar)2, (Scalar)1);
+        restarted = true;
+      } else {
+        q += 1;
+      }
+
+      CopyState(prev, curr, bal.ncam, bal.npt);
+      CopyState(curr, next, bal.ncam, bal.npt);
+      cost_curr = cost_new;
+      cost_ema = (1 - eta) * cost_ema + eta * cost_curr;
+
+      if (it % 10 == 0 || it == n_iter) {
+        std::printf("  it%4d cost=%.5e ema=%.5e q=%.3f cam_acc=%d/%d pt_acc=%d/%d "
+                    "restart=%d\n",
+                    it, cost_curr, cost_ema, q, n_cam_acc, bal.ncam, n_pt_acc, bal.npt,
+                    restarted);
+      }
+    }
+    cudaDeviceSynchronize();
+    double wall =
+        std::chrono::duration<double>(std::chrono::steady_clock::now() - t_start).count();
+    std::printf("done: %d iters, wall=%.3fs (%.2f ms/iter), final cost=%.6e\n", n_iter, wall,
+                1000.0 * wall / n_iter, cost_curr);
     return 0;
   }
   for (int it = 1; it <= n_iter; ++it) {

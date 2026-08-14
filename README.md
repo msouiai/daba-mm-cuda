@@ -155,19 +155,23 @@ plateaus, relative ordering).
 | Caspar (COLMAP path, intrinsics refined) | 0.971s | 0.9651px |
 | Centralized Ceres (BAL, intrinsics fixed) | 0.66s | 1.2199px |
 | Consensus ADMM, parallel, fixed rho | 4.10s | 1.6784px |
-| **DABA-MM, this repo (200 it, accelerated)** | **0.156s** | **1.3653px** |
+| DABA-MM, fixed damping (200 it, accelerated) | **0.154s** | 1.3653px |
+| **DABA-MM + multi-lambda damping (200 it)** | **0.402s** | **1.2262px** |
 
-**Speed**: DABA-MM is the fastest solver on this problem by a wide margin —
-~6.2x faster than Caspar, ~38x faster than Ceres, ~4.2x faster than the
-centralized-Ceres baseline it's most directly comparable to (same BAL
-problem, same fixed-intrinsics setup).
+**Speed**: even with multi-lambda damping, DABA-MM is the fastest solver on
+this problem by a wide margin — ~2.4x faster than Caspar, ~14.7x faster than
+Ceres, ~1.6x faster than the centralized-Ceres baseline it's most directly
+comparable to (same BAL problem, same fixed-intrinsics setup). Fixed-damping
+DABA-MM is faster still (~6.2x/~38x/~4.2x respectively) but at a real
+accuracy cost — see below.
 
-**Accuracy**: behind in that direct comparison — 1.37px vs. 1.22px for
-centralized Ceres on the identical BAL problem — because it hasn't fully
-converged at this fixed 200-iteration budget (no early-stopping implemented;
-cost was still measurably decreasing at iteration 200). A larger iteration
-budget would likely close most of that gap, at the cost of some of the speed
-advantage.
+**Accuracy**: multi-lambda damping (see `CONVERGENCE_LITERATURE.md` for the
+full derivation) closes most of the gap to centralized Ceres — 1.226px vs.
+1.220px, down from fixed-damping's 1.365px — at ~2.6x fixed-damping's
+wall-clock. Neither variant has fully converged at this fixed 200-iteration
+budget (no early-stopping implemented; cost was still measurably decreasing
+at iteration 200 for both), so a larger budget would likely close the
+remaining gap further for either.
 
 **Comparability caveat**: the top two rows (Ceres/Caspar via COLMAP's normal
 path) refine camera intrinsics as part of the solve; DABA-MM and the
@@ -218,6 +222,25 @@ does happen on real data, confirmed in complete isolation — two bare
 `mm_step` calls that themselves increase cost), unlike the LM-style adaptive
 damping Ceres and Caspar already use elsewhere in this project. Full results,
 including the isolation experiment, in `CONVERGENCE_LITERATURE.md`.
+
+**Followed that lead and it paid off**: `--damping-scheme multilambda`
+(`--ml-n-lambda`, `--ml-decades`, `--ml-lam0`), adapted from
+[msouiai/multishift-bundle-adjustment](https://github.com/msouiai/multishift-bundle-adjustment)'s
+core idea — try a grid of LM damping values, keep whichever candidate has
+the lowest *true* cost, never throw away a solve — but reworked for DABA's
+decoupled block structure (their repo solves the full coupled system with
+CG; DABA's 6x6/3x3 blocks need no CG at all, just a few extra cheap Cholesky
+solves per block) and with **per-block accept/reject** instead of one global
+λ. Cross-validated exactly against `reference_mm.py`. Measured on the
+muellcontainer BAL problem: **19.4% lower final cost than the fixed-λ
+baseline** (5.529e4 vs. 6.855e4, RMSE 1.226px vs. 1.365px), at ~2.6x the
+wall-clock (0.40s vs. 0.15s — still far faster than Ceres or Caspar on this
+problem). 100% block acceptance throughout, so this isn't just a robustness
+net for bad problems — it's a genuinely better per-block step on a normal
+one. **The first of six literature-adapted mechanisms tried across this
+whole investigation that actually beats the original baseline.** Full
+derivation and results in `CONVERGENCE_LITERATURE.md` and
+`../colmap_solver_comparison/run_real_simpleradial_62cam_18Kpt_caspar_ok/README.md`.
 
 ## Honest gaps / not implemented
 

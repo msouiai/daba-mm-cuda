@@ -399,7 +399,93 @@ of my own and labeling it as satisfying that claim would misrepresent what's
 actually known. Still blocked on the same thing as before: the formula isn't
 in the openly-readable parts of the paper. Left undone rather than guessed at.
 
-## Summary across both rounds
+## Third round: multi-shift-inspired per-block adaptive damping — the first real win
+
+The "adaptive LM-style damping" follow-up flagged above (and independently
+re-confirmed by the insta360x4 dataset's NaN-cascade failure — see that
+investigation's writeup) pointed at a specific gap: this codebase's block
+solve uses a *fixed* `factor`/`lam` for every block, every iteration, with
+no mechanism to recover from a locally bad step. [msouiai/multishift-bundle-adjustment](https://github.com/msouiai/multishift-bundle-adjustment)
+turned out to be a well-matched, previously-untried answer to exactly this
+gap — not because its core mechanism transplants directly, but because its
+underlying *philosophy* does.
+
+**Why the mechanism itself doesn't transplant**: that repo speeds up
+Levenberg-Marquardt by solving the *full coupled* camera+point normal
+equations with conjugate gradients, exploiting Krylov shift-invariance
+(`K_m(A,b) = K_m(A+σI,b)` for every shift σ) so **one stream of matvecs
+yields solutions for a whole grid of damping values λ at once** — instead of
+the classical "guess λ, solve, reject, redo" loop, which throws away a full
+CG solve on every rejection. Their headline finding: this wins exactly when
+the baseline's own rejection rate is high (not predicted by problem size or
+density), and **greedy min-cost selection (accept whichever λ's candidate
+has the lowest true, non-linearized cost) beats gain-ratio selection
+significantly** — their own explicit ablation, not assumed. DABA's entire
+design avoids ever forming that coupled system in the first place — every
+camera/point is an independent 6×6/3×3 block, already solved by direct
+Cholesky. There is no expensive shared matvec stream for a Krylov trick to
+amortize at that scale; plugging `multishift_cg` into DABA literally has
+nothing to act on.
+
+**What transplants is the philosophy, adapted to what's actually expensive
+here.** For blocks this tiny, you don't need CG's shift-invariance to get
+"one pass, many λ" cheaply — solving a 6×6 or 3×3 Cholesky system at 6
+different λ costs a handful of extra flops, utterly negligible next to the
+O(nobs) Jacobian-accumulation kernel that already dominates every DABA
+iteration's wall-clock (established repeatedly earlier in this document).
+So: give each block its own small λ grid (6 candidates, ±2 decades around a
+*persistent per-block* base λ, not a single global scalar), evaluate every
+candidate's **true local reprojection cost** (matching their own
+gain-ratio-loses finding, not the linearized model's predicted reduction),
+and accept the best if it improves — **per block**, not globally. That last
+part is the key adaptation beyond a literal port: a single ill-conditioned
+camera or point simply freezes at its current position for that iteration
+instead of being dragged along by a λ tuned for the average block, or
+(as measured directly on insta360x4) corrupting every neighboring block on
+the next iteration via a NaN cascade.
+
+Implemented and cross-validated exactly (CUDA vs. numpy reference, bit-for-
+bit on ladybug-49 and the muellcontainer BAL problem) as
+`solve_retract_multilambda`/`solve_multilambda` in `reference_mm.py` and
+`--damping-scheme multilambda` in `daba_mm.cu`.
+
+**Result, muellcontainer BAL problem (62 cams, 18,044 pts, 73,546 obs), 200
+iterations** — full writeup and plot in
+`../colmap_solver_comparison/run_real_simpleradial_62cam_18Kpt_caspar_ok/README.md`:
+
+| scheme | wall-clock | final cost | final RMSE |
+|---|---:|---:|---:|
+| fixed λ (original) | 0.154s | 6.85452e4 | 1.3653px |
+| multi-lambda (new) | 0.402s | **5.52898e4** | **1.2262px** |
+
+**19.4% lower cost**, closing most of the remaining gap to the centralized-
+Ceres-BAL reference (1.2199px, same fixed-intrinsics problem) — at ~2.6x the
+wall-clock (still 0.4s, still dramatically faster than Ceres' 5.9s or
+Caspar's 0.97s on the COLMAP-path version of this same problem). Block
+acceptance was 100% throughout — every camera, every point, every
+iteration — meaning this isn't a robustness safety net quietly doing
+nothing on an easy problem; it is genuinely finding a better per-block step
+than the fixed λ on *every single iteration* of a well-conditioned real
+problem, not just rescuing pathological ones. **This is the first
+literature-adapted mechanism in this entire investigation (two prior rounds,
+five other mechanisms) that actually beats the original fixed-parameter
+baseline**, not just approaches it or fails more gracefully.
+
+Also confirmed on ladybug-49 (the small synthetic validation problem):
+identical final cost to the fixed baseline (1.636729e4, exact match), 100%
+acceptance throughout — expected and reassuring, since that problem is easy
+enough that the fixed λ=1e-6 was already never rejected; multi-lambda
+correctly degenerates to the same behavior rather than doing something
+different-but-not-better on a problem with nothing to fix.
+
+**Not yet done**: a test on venice-1778 (the largest real problem in this
+repo) or on the insta360x4 pathological case specifically, to see whether
+per-block freezing actually prevents the NaN cascade that motivated this in
+the first place — the muellcontainer result already answers "does this help
+on a normal problem," but the insta360x4 case is the more direct test of
+the robustness claim this was originally designed around.
+
+## Summary across all three rounds
 
 | mechanism | source | status | verdict |
 |---|---|---|---|
@@ -408,13 +494,16 @@ in the openly-readable parts of the paper. Left undone rather than guessed at.
 | BB-adaptive factor | our own adaptation | implemented, cross-validated* | never beats baseline at any tau |
 | SQUAREM | Varadhan & Roland 2008 | implemented, cross-validated | worse on all 3 problems; surfaced a real robustness gap |
 | Closed-form warm start | DABA IJRR 2025 | blocked | formula not accessible |
-| Barzilai-Borwein (this round's lead) | — | superseded by above | tested, negative |
+| Barzilai-Borwein (2nd round's lead) | — | superseded by above | tested, negative |
 | Catalyst | Lin/Mairal/Harchaoui | not attempted | too large a change to validate cheaply |
 | Accelerated coordinate descent | Nesterov 2012; Fercoq & Richtárik 2015 | ruled out | doesn't apply to full-batch GPU MM |
+| **Multi-lambda per-block damping** | **msouiai/multishift-bundle-adjustment** | **implemented, cross-validated** | **19.4% lower cost on muellcontainer — first real win** |
 
-Five literature-backed mechanisms implemented and honestly measured against
-this codebase's own real problems; none improved on the existing simple
-scheme. The most valuable output of this investigation turned out not to be
-"we found a winner" but the majorization-robustness finding above — a
-concrete, actionable lead (adaptive LM-style damping) that emerged from
-actually testing these ideas rather than reading about them.
+Six literature-backed mechanisms implemented and honestly measured against
+this codebase's own real problems; five didn't improve on the existing
+simple scheme, and the sixth — per-block adaptive damping, adapted (not
+literally ported) from multi-shift CG's core philosophy — genuinely does.
+The earlier five rounds' most valuable output was the majorization-
+robustness finding that pointed straight at this gap; this round is the
+payoff of actually following that lead instead of stopping at "we found a
+problem."

@@ -1,0 +1,23 @@
+loaded /workspace/bundle_adjustment/colmap_solver_comparison/run_real_simpleradial_62cam_18Kpt_caspar_ok/perturbed.bal.txt: ncam=62 npt=18044 nobs=73546
+init cost=2.486070e+08 rmse=82.2228px
+  it  10 cost=1.30132e+05 ema=1.30132e+05 q=11.000 cam_acc=62/62 pt_acc=18043/18044 restart=0
+  it  20 cost=6.81451e+04 ema=6.81451e+04 q=21.000 cam_acc=62/62 pt_acc=18044/18044 restart=0
+  it  30 cost=6.15919e+04 ema=6.15919e+04 q=31.000 cam_acc=62/62 pt_acc=18044/18044 restart=0
+  it  40 cost=5.94613e+04 ema=5.94613e+04 q=41.000 cam_acc=62/62 pt_acc=18044/18044 restart=0
+  it  50 cost=5.82242e+04 ema=5.82242e+04 q=51.000 cam_acc=62/62 pt_acc=18044/18044 restart=0
+  it  60 cost=5.74702e+04 ema=5.74702e+04 q=61.000 cam_acc=62/62 pt_acc=18044/18044 restart=0
+  it  70 cost=5.69522e+04 ema=5.69522e+04 q=71.000 cam_acc=62/62 pt_acc=18044/18044 restart=0
+  it  80 cost=5.65804e+04 ema=5.65804e+04 q=81.000 cam_acc=62/62 pt_acc=18044/18044 restart=0
+  it  90 cost=5.63215e+04 ema=5.63215e+04 q=91.000 cam_acc=62/62 pt_acc=18044/18044 restart=0
+  it 100 cost=5.61219e+04 ema=5.61219e+04 q=101.000 cam_acc=62/62 pt_acc=18044/18044 restart=0
+  it 110 cost=5.59604e+04 ema=5.59604e+04 q=111.000 cam_acc=62/62 pt_acc=18044/18044 restart=0
+  it 120 cost=5.58249e+04 ema=5.58249e+04 q=121.000 cam_acc=62/62 pt_acc=18044/18044 restart=0
+  it 130 cost=5.57067e+04 ema=5.57067e+04 q=131.000 cam_acc=62/62 pt_acc=18044/18044 restart=0
+  it 140 cost=5.56039e+04 ema=5.56039e+04 q=141.000 cam_acc=62/62 pt_acc=18044/18044 restart=0
+  it 150 cost=5.55173e+04 ema=5.55173e+04 q=151.000 cam_acc=62/62 pt_acc=18044/18044 restart=0
+  it 160 cost=5.54484e+04 ema=5.54484e+04 q=161.000 cam_acc=62/62 pt_acc=18044/18044 restart=0
+  it 170 cost=5.53955e+04 ema=5.53955e+04 q=171.000 cam_acc=62/62 pt_acc=18044/18044 restart=0
+  it 180 cost=5.53527e+04 ema=5.53527e+04 q=181.000 cam_acc=62/62 pt_acc=18044/18044 restart=0
+  it 190 cost=5.53174e+04 ema=5.53174e+04 q=191.000 cam_acc=62/62 pt_acc=18044/18044 restart=0
+  it 200 cost=5.52898e+04 ema=5.52898e+04 q=201.000 cam_acc=62/62 pt_acc=18044/18044 restart=0
+done: 200 iters, wall=0.402s (2.01 ms/iter), final cost=5.528975e+04
